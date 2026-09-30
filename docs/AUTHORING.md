@@ -8,6 +8,8 @@ Unless the user explicitly asks for a narrower scope, finish the whole task in t
 
 An `Exploration is incomplete` error is an instruction to continue the walkthrough. Use Status to find missing rows, perform any untested actions, record the real observations, and Complete before generating or executing. Do not describe the script as finished or "blocked only by exploration" while those actions are still available. A recoverable command failure calls for targeted observation and bounded recovery, not final delivery. Stop early only on an explicit user request or a concrete blocker that remains after permitted recovery and needs unavailable access, information, or capability. Report the unfinished rows, observed failure, attempted recovery, and exact intervention needed; keep the result incomplete without fabricating evidence or relaxing assertions.
 
+A failed selector or unrecorded row is not itself an external blocker. If the user asks about progress or an error during the task, answer briefly and resume the authorized work unless they explicitly ask to stop or only want an explanation. Do not end with "I can continue" or defer executable remaining work to a "next iteration".
+
 ## Start with the supported transport
 
 Use the following from a shell, including hosts where script execution is disabled. Pipe UTF-8 JSON directly to the batch entrypoint; this preserves arrays, quotes, spaces and Unicode across powershell.exe -File. Do not pass -Arguments @(...) across that process boundary or invent a temporary PowerShell wrapper for every call.
@@ -56,7 +58,9 @@ For brokered save/print dialogs, `windows -Foreground` returns the actual root a
 
 Perform the ENTIRE testcase once through the GUI before writing the final script: save, close/reopen, print/export, required content assertions, and cleanup. Discover only unknown controls within that full walkthrough. Keep exploration and execution outputs separate. Every row needs a successful observation receipt that actually proves its expectation, not just successful action dispatch.
 
-After reviewing the results, pass a JSON array of records with stepIndex, route, observedResult and verificationCommandId using the same UTF-8 stdin pattern with -Action RecordSteps. The id comes from an actual command response. Record the routes already performed and the actual content/state observed; do not write planned observations. Successful type -Verify readback is valid evidence of the typed text; typing without verification is not. Neither proves saving or persistence.
+As each row is fully verified, review its results and record it; do not postpone all recording until the end. Pass a JSON array of records with stepIndex, route, observedResult and verificationCommandId using the same UTF-8 stdin pattern with -Action RecordSteps. The id comes from an actual command response. Record the routes already performed and the actual content/state observed; do not write planned observations. Successful type -Verify readback is valid evidence of the typed text; typing without verification is not. Neither proves saving or persistence.
+
+Exploration responses include `workflow` with the stage, recorded/required counts, missing rows and next action. This progress reads only the small manifest, without another desktop observation. `ok` means the individual command succeeded; even Complete finishes only exploration. Follow the next action through generation and a passing execution of the delivered script.
 
 Command responses now include verification.eligible. Nonempty windows observations are accepted for title/window state. Use verificationCommandIds as an array when a row needs several observations, such as wait-file plus windows; every ID must belong to that row and pass verification checks. Eligibility does not establish that the observation proves the entire expectation. The API accepts a primary verificationCommandId plus optional additional verificationCommandIds.
 

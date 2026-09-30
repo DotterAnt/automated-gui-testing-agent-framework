@@ -145,6 +145,28 @@ function Test-AGTAExplorationCommandSucceeded {
         ($Command -eq 'wait-file' -and -not $Result.data.conditionMet)))
 }
 
+function Get-AGTAExplorationWorkflow {
+    param([string]$RunRoot, [int]$StepIndex, $Result, [string]$Command)
+    # Keep progress cheap: never scan command transcripts or query the desktop here.
+    $paths=Get-AGTAExplorationPaths $RunRoot
+    $m=Get-Content -LiteralPath $paths.manifest -Raw | ConvertFrom-Json
+    $missing=@(1..$m.stepCount | Where-Object {$_ -notin @($m.steps.stepIndex)})
+    $next='Continue the missing CSV rows through the GUI. Review and record each verified row as you finish it; do not generate the script yet.'
+    if ($m.completed) {
+        $next='Exploration is complete, not the whole task. Generate the script, then execute and repair it until the delivered revision passes every row, required assertion and cleanup.'
+    } elseif ($Result -and -not (Test-AGTAExplorationCommandSucceeded $Result $Command)) {
+        $next='Recover the failed command using observed GUI state, then resume this walkthrough. Do not replace unfinished rows with guessed script steps or deliver a partial result.'
+    } elseif (-not $missing.Count) {
+        $next='All rows are recorded. Close exploration-owned windows through the GUI, verify cleanup, then Complete and continue to script generation and execution.'
+    } elseif ($StepIndex -in $missing -and $Result.verification.eligible) {
+        $next='Review whether the observations prove every expectation of this row. If so, record it now; otherwise finish its missing actions and assertions. Continue the remaining rows.'
+    }
+    # This checkpoint cannot establish completion of the subsequent script execution.
+    [ordered]@{stage=$(if ($m.completed) {'development_iteration'} else {'exploration'});
+        explorationComplete=[bool]$m.completed;recorded=$m.steps.Count;required=$m.stepCount;
+        missingSteps=$missing;nextAction=$next}
+}
+
 function Get-AGTAExplorationStatus {
     param([string]$RunRoot)
     $paths=Get-AGTAExplorationPaths $RunRoot

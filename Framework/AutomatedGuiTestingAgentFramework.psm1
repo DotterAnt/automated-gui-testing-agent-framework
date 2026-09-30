@@ -706,12 +706,15 @@ function Invoke-AGTAAgentTool {
                 $id=Add-AGTAExplorationCommand $Context.Run.runRoot $Arguments.stepIndex $command $args $result
                 $result | Add-Member -NotePropertyName explorationCommandId -NotePropertyValue $id -Force
                 $result | Add-Member -NotePropertyName verification -NotePropertyValue (Get-AGTAExplorationVerificationInfo @{command=$command;result=$result}) -Force
+                $result | Add-Member -NotePropertyName workflow -NotePropertyValue (Get-AGTAExplorationWorkflow -RunRoot $Context.Run.runRoot -StepIndex $Arguments.stepIndex -Result $result -Command $command) -Force
             }
             return $result
         }
         'record_exploration_step' {
             Assert-AGTAAuthoringStage -Context $Context -AllowedStages @('exploration') -ToolName $Name
-            return Complete-AGTAExplorationStep $Context.Run.runRoot $Arguments.stepIndex $Arguments.route $Arguments.observedResult $Arguments.verificationCommandId $Arguments.verificationCommandIds
+            $result=Complete-AGTAExplorationStep $Context.Run.runRoot $Arguments.stepIndex $Arguments.route $Arguments.observedResult $Arguments.verificationCommandId $Arguments.verificationCommandIds
+            $result.workflow=Get-AGTAExplorationWorkflow -RunRoot $Context.Run.runRoot -Result $result
+            return $result
         }
         'write_generated_script' {
             Assert-AGTAAuthoringStage -Context $Context -AllowedStages @('development_iteration') -ToolName $Name
@@ -1095,4 +1098,4 @@ Export-ModuleMember -Function `
     Invoke-AGTAAgentAuthoring, `
     Invoke-AGTAAgentTool, `
     Get-AGTAOpenAITools
-Export-ModuleMember -Function Get-AGTAExplorationPaths, Initialize-AGTAExploration, Add-AGTAExplorationCommand, Complete-AGTAExplorationStep, Complete-AGTAExploration, Test-AGTAExploration, Test-AGTAExplorationCommandSucceeded, Get-AGTAExplorationStatus, Get-AGTAExplorationVerificationInfo
+Export-ModuleMember -Function Get-AGTAExplorationPaths, Initialize-AGTAExploration, Add-AGTAExplorationCommand, Complete-AGTAExplorationStep, Complete-AGTAExploration, Test-AGTAExploration, Test-AGTAExplorationCommandSucceeded, Get-AGTAExplorationStatus, Get-AGTAExplorationVerificationInfo, Get-AGTAExplorationWorkflow

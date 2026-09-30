@@ -28,11 +28,14 @@ function Read-Requests {
     if ([string]::IsNullOrWhiteSpace($raw)) { throw 'Request JSON is empty; no action was dispatched.' }
     $raw.TrimStart([char]0xFEFF) | ConvertFrom-Json
 }
-function Write-Response($Result) {
+function Write-Response($Result, [int]$ActiveStep=0, [string]$ActiveCommand) {
+    $workflow=Get-AGTAExplorationWorkflow -RunRoot $RunRoot -StepIndex $ActiveStep -Result $Result -Command $ActiveCommand
+    if ($Result -is [System.Collections.IDictionary]) { $Result['workflow']=$workflow }
+    else { $Result | Add-Member -NotePropertyName workflow -NotePropertyValue $workflow -Force }
     if ($OutputMode -eq 'Compact' -and $Result.explorationCommandId) {
         # Complete command results remain in the transcript; never truncate readback.
         $Result=[ordered]@{ok=$Result.ok;command=$Result.command;data=$Result.data;error=$Result.error;
-            outcome=$Result.outcome;durationMs=$Result.durationMs;explorationCommandId=$Result.explorationCommandId;verification=$Result.verification}
+            outcome=$Result.outcome;durationMs=$Result.durationMs;explorationCommandId=$Result.explorationCommandId;verification=$Result.verification;workflow=$workflow}
     }
     $Result | ConvertTo-Json -Depth 80 -Compress
 }
@@ -74,7 +77,7 @@ try {
                 $id=Add-AGTAExplorationCommand $RunRoot $request.stepIndex $request.command $values $result
                 $result | Add-Member -NotePropertyName explorationCommandId -NotePropertyValue $id -Force
                 $result | Add-Member -NotePropertyName verification -NotePropertyValue (Get-AGTAExplorationVerificationInfo @{command=$request.command;result=$result}) -Force
-                Write-Response $result
+                Write-Response $result $request.stepIndex $request.command
                 if (-not (Test-AGTAExplorationCommandSucceeded $result $request.command)) { exit 1 }
             }
             return
@@ -93,6 +96,9 @@ try {
     Write-Response $result
     if ($result.ok -eq $false) { exit 1 }
 } catch {
-    @{ok=$false;error=$_.Exception.Message} | ConvertTo-Json -Compress
+    $failure=@{ok=$false;error=$_.Exception.Message}
+    # Preserve the original error even if no usable manifest exists yet.
+    try { $failure.workflow=Get-AGTAExplorationWorkflow -RunRoot $RunRoot -Result $failure } catch { }
+    $failure | ConvertTo-Json -Depth 10 -Compress
     exit 1
 }
