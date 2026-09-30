@@ -67,6 +67,17 @@ try {
     Check ($failed.status -eq 'FAIL') 'Caught assertion turned into PASS.'
     $missing=Invoke-RecordedStep 1 { param($Commands,$Evidence) }
     Check ($missing.status -eq 'FAIL') 'No assertion turned into PASS.'
+    $readback=@{ok=$true;command='read';data=@{text="Title`r`nBody text";textSource='TextPattern'}}
+    $content=Invoke-RecordedStep 1 { param($Commands,$Evidence) Assert-TextContains $readback @("Title`nBody",'text') }
+    Check ($content.status -eq 'PASS') 'Content assertion did not normalize line endings or verify all fragments.'
+    $content=Invoke-RecordedStep 1 { param($Commands,$Evidence) Assert-TextContains $readback @('Title','missing paragraph') }
+    Check ($content.status -eq 'FAIL') 'Missing paragraph passed content assertion.'
+    $readback.data.textSource='Name'
+    $content=Invoke-RecordedStep 1 { param($Commands,$Evidence) Assert-TextContains $readback @('Title') }
+    Check ($content.status -eq 'FAIL') 'Accessible element name was accepted as document content.'
+    $readback.command='read-pdf'
+    $content=Invoke-RecordedStep 1 { param($Commands,$Evidence) Assert-TextContains $readback @('Body text') }
+    Check ($content.status -eq 'PASS') 'Read-only PDF content was rejected.'
     $final=Complete-AGTAGeneratedTest @($pass) @(@{ok=$false;error='cleanup fixture'}) -PassThru
     Check (-not $final.ok -and (Get-AGTATestExitCode) -eq 1) 'Cleanup failure passed.'
     $final=Complete-AGTAGeneratedTest @() @() -PassThru

@@ -13,6 +13,11 @@ try {
     Initialize-AGTAExploration $root $csv GuiNavigation | Out-Null
     Reject { Complete-AGTAExploration $root $csv GuiNavigation } 'Empty exploration passed.'
     Reject { Complete-AGTAExplorationStep $root 1 'route' 'result' 'fabricated-id' } 'Invented evidence passed.'
+    $plain=Add-AGTAExplorationCommand $root 1 type @('-Text','fixture') @{ok=$true;data=@{typed=$true;verificationPerformed=$false}}
+    Reject { Complete-AGTAExplorationStep $root 1 'Typed fixture' 'Unverified text' $plain } 'Unverified typing passed as evidence.'
+    $verified=Add-AGTAExplorationCommand $root 1 type @('-Text','fixture','-Verify') @{ok=$true;data=@{typed=$true;verificationPerformed=$true;verified=$true;verification=@{verified=$true;mode='Exact';attempts=1;observedLength=7;readError=$null}}}
+    Complete-AGTAExplorationStep $root 1 'Typed fixture' 'Verified literal text' $verified | Out-Null
+    Check ((Get-AGTAExplorationStatus $root).covered -eq 1) 'Successful type readback was rejected as evidence.'
     for ($i=1;$i -le 2;$i++) {
         Add-AGTAExplorationCommand $root $i click @('-Name','Fixture') @{ok=$true;interactionPolicy=@{mode='GuiNavigation'}} | Out-Null
         $miss=Add-AGTAExplorationCommand $root $i wait-element @() @{ok=$true;data=@{exists=$false}}
@@ -23,8 +28,17 @@ try {
     }
     $completed=Complete-AGTAExploration $root $csv GuiNavigation
     Check (Test-AGTAExploration $completed.explorationPath $csv GuiNavigation).ok 'Complete exploration failed.'
+    $savedManifest=Get-Content $completed.explorationPath -Raw
+    $modified=$savedManifest | ConvertFrom-Json
+    $modified.steps[0].verificationCommandId=$verified
+    $modified | ConvertTo-Json -Depth 16 | Set-Content $completed.explorationPath
+    Check (Test-AGTAExploration $completed.explorationPath $csv GuiNavigation).ok 'Execution gate rejected verified typing receipt.'
+    $modified.steps[0].verificationCommandId=$plain
+    $modified | ConvertTo-Json -Depth 16 | Set-Content $completed.explorationPath
+    Check (-not (Test-AGTAExploration $completed.explorationPath $csv GuiNavigation).ok) 'Execution gate accepted unverified typing receipt.'
+    $savedManifest | Set-Content $completed.explorationPath
     $routes=Get-Content -LiteralPath $completed.routesPath -Raw | ConvertFrom-Json
-    Check ($routes.steps.Count -eq 2 -and $routes.steps[0].successfulCommands.Count -eq 2 -and $routes.steps[0].failedCommandIds.Count -eq 1) 'Route reference lost row coverage or included an unmet wait as successful.'
+    Check ($routes.steps.Count -eq 2 -and $routes.steps[0].successfulCommands.Count -eq 4 -and $routes.steps[0].failedCommandIds.Count -eq 1) 'Route reference lost row coverage or included an unmet wait as successful.'
     Check (-not (Test-AGTAExploration $completed.explorationPath $csv VisibleControls).ok) 'Policy mismatch passed.'
     Reject { Add-AGTAExplorationCommand $root 1 click @() @{ok=$true} } 'Completed transcript was silently extended.'
     $scriptPath=Join-Path $root 'fixture.ps1'
@@ -85,6 +99,22 @@ $app=New-Object -ComObject Example.Application
     Check ($LASTEXITCODE -eq 0 -and $saved.Count -eq 2 -and $saved[0].ok) 'Batch lost persisted CSV/CLI/policy configuration.'
     $status=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Status -RunRoot $savedRoot | ConvertFrom-Json
     Check ($status.interactionPolicy -eq 'VisibleControls' -and $status.missingSteps.Count -eq 2 -and $status.commandCount -eq 2) 'Status hid missing rows or weakened the saved strict policy.'
+    $oldOutputEncoding=$OutputEncoding
+    $OutputEncoding=New-Object Text.UTF8Encoding($false)
+    try {
+        $stdin=@(($requestsContent | ConvertTo-Json -Depth 6) | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsStdin | ForEach-Object {$_ | ConvertFrom-Json})
+        Check ($LASTEXITCODE -eq 0 -and $stdin.Count -eq 2 -and $stdin[1].ok) ('UTF-8 stdin batch lost commands or failed to record receipts: '+($stdin | ConvertTo-Json -Depth 4 -Compress))
+        $unicode='missing-'+[char]0x151+[char]0x4e2d
+        $badJson=@(@{stepIndex=1;command='help';arguments=@('-Topic',$unicode)},@{stepIndex=1;command='help';arguments=@()}) | ConvertTo-Json -Depth 6
+        $bad=@($badJson | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsStdin | ForEach-Object {$_ | ConvertFrom-Json})
+        Check ($LASTEXITCODE -eq 1 -and $bad.Count -eq 1 -and $bad[0].error.message.Contains($unicode)) 'Stdin corrupted Unicode or continued after failure.'
+        $invalid='[{"stepIndex":1,"command":"help"},{"stepIndex":999,"command":"click"}]'
+        $priorCount=(Get-AGTAExplorationStatus $savedRoot).commandCount
+        $invalidResult=$invalid | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsStdin | ConvertFrom-Json
+        Check (-not $invalidResult.ok -and (Get-AGTAExplorationStatus $savedRoot).commandCount -eq $priorCount) 'Invalid stdin batch dispatched a partial batch before validation.'
+    } finally { $OutputEncoding=$oldOutputEncoding }
+    $helperHelp=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $frameworkRoot 'Get-RuntimeHelp.ps1') -Names Invoke-StepCommand,Assert-TextContains | ConvertFrom-Json
+    Check ($LASTEXITCODE -eq 0 -and $helperHelp.Count -eq 2 -and $helperHelp[1].name -eq 'Assert-TextContains') 'Combined runtime help lost a requested signature.'
     $changed=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsPath $requests -InteractionPolicy GuiNavigation | ConvertFrom-Json
     Check ($LASTEXITCODE -eq 1 -and -not $changed.ok) 'Persisted policy accepted a changed command policy.'
     @(@{stepIndex=1;command='wait-file';arguments=@('-Path',(Join-Path $root 'absent'),'-TimeoutMs','0')},@{stepIndex=1;command='help';arguments=@()}) | ConvertTo-Json -Depth 6 | Set-Content $requests
@@ -99,6 +129,14 @@ $app=New-Object -ComObject Example.Application
     $reviewed | ConvertTo-Json -Depth 6 | Set-Content $requests
     $recorded=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action RecordSteps -RunRoot $savedRoot -RequestsPath $requests | ForEach-Object {$_ | ConvertFrom-Json})
     Check ($LASTEXITCODE -eq 0 -and $recorded.Count -eq 2 -and $recorded[1].covered -eq 2) 'Reviewed rows were not recorded in one invocation.'
+    $reviewed[0].observedResult='Observed '+[char]0x151+[char]0x4e2d
+    $oldOutputEncoding=$OutputEncoding
+    $OutputEncoding=New-Object Text.UTF8Encoding($false)
+    try {
+        $recorded=@(($reviewed | ConvertTo-Json -Depth 6) | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action RecordSteps -RunRoot $savedRoot -RequestsStdin | ForEach-Object {$_ | ConvertFrom-Json})
+        $savedStatus=Get-AGTAExplorationStatus $savedRoot
+        Check ($LASTEXITCODE -eq 0 -and $recorded.Count -eq 2 -and $savedStatus.steps[0].observedResult -ceq $reviewed[0].observedResult) 'Reviewed stdin rows corrupted Unicode or lost evidence.'
+    } finally { $OutputEncoding=$oldOutputEncoding }
     Import-Module (Join-Path $frameworkRoot 'Framework\AutomatedGuiTestingAgentFramework.psm1') -Force
     $apiRoot=Join-Path $root 'api'
     $generated=Join-Path $apiRoot 'generated'; New-Item -ItemType Directory $generated -Force | Out-Null

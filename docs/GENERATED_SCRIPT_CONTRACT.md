@@ -36,6 +36,7 @@ Do not copy universal boilerplate into each generated script. The framework runt
 - `Invoke-RecordedStep`
 - `Assert-PotatoOk`, `Assert-PotatoFound`, and `Assert-FileWait`
 - `Assert-ExpectedResult -Condition <bool> -Message <expected postcondition>`
+- `Assert-TextContains -Result <read/read-pdf result> -Expected <string[]>`: verifies every content fragment, normalizing CR/LF; rejects read results whose source is only the element Name. Use after GUI reopening when the CSV requires persisted content.
 - `Invoke-EvidenceScreenshot` and `Add-EvidencePath`
 - `Register-OpenedProcess -StartResult $started` and `Register-CreatedExternalPath`
 - `Invoke-TestCleanup`

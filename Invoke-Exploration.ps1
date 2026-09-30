@@ -10,13 +10,23 @@ param(
     [string]$Command,
     [string[]]$Arguments=@(),
     [string]$RequestsPath,
+    [switch]$RequestsStdin,
     [string]$Route,
     [string]$ObservedResult,
     [string]$VerificationCommandId,
     [ValidateSet('Compact','Full')] [string]$OutputMode='Compact'
 )
 $ErrorActionPreference='Stop'
+[Console]::InputEncoding=New-Object Text.UTF8Encoding($false)
+[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
 Import-Module (Join-Path $PSScriptRoot 'Framework\AutomatedGuiTestingAgentFramework.psm1')
+function Read-Requests {
+    if ($RequestsStdin -and $RequestsPath) { throw 'Use RequestsStdin or RequestsPath, not both.' }
+    if (-not $RequestsStdin -and -not $RequestsPath) { throw 'Provide RequestsPath for a JSON file, or RequestsStdin for UTF-8 JSON input.' }
+    $raw=if ($RequestsStdin) { [Console]::In.ReadToEnd() } else { Get-Content -LiteralPath $RequestsPath -Raw }
+    if ([string]::IsNullOrWhiteSpace($raw)) { throw 'Request JSON is empty; no action was dispatched.' }
+    $raw.TrimStart([char]0xFEFF) | ConvertFrom-Json
+}
 function Write-Response($Result) {
     if ($OutputMode -eq 'Compact' -and $Result.explorationCommandId) {
         # Complete command results remain in the transcript; never truncate readback.
@@ -43,14 +53,13 @@ try {
             if (-not $TestCaseCsv) { throw 'Begin requires TestCaseCsv.' }
             Initialize-AGTAExploration $RunRoot $TestCaseCsv $InteractionPolicy (Get-Item -LiteralPath $PotatoCliPath).FullName | Out-Null
             $result=@{ok=$true;runRoot=$RunRoot;explorationPath=$paths.manifest;steps=@(Import-Csv -LiteralPath $TestCaseCsv);
-                next='Write a JSON request array, then use powershell.exe -NoProfile -ExecutionPolicy Bypass -File Invoke-Exploration.ps1 -Action Batch -RunRoot <this-root> -RequestsPath <file>. Only RunRoot is needed again. Use Status for progress, RecordSteps for reviewed receipts, then close the owned app and Complete.'}
+                next='Set $OutputEncoding to UTF8Encoding(false), then pipe a JSON request array to powershell.exe -NoProfile -ExecutionPolicy Bypass -File Invoke-Exploration.ps1 -Action Batch -RunRoot <this-root> -RequestsStdin. This combines request creation and execution in one tool call. RequestsPath JSON files also work. Use RecordSteps for reviewed receipts, then close the owned app and Complete.'}
         }
         { $_ -in @('Command','Batch') } {
             if ($m.completed) { throw 'Exploration is complete; no action was dispatched.' }
             $requests=@([pscustomobject]@{stepIndex=$StepIndex;command=$Command;arguments=$Arguments})
             if ($Action -eq 'Batch') {
-                if (-not $RequestsPath) { throw 'Batch requires RequestsPath containing a JSON array.' }
-                $decoded=Get-Content -LiteralPath $RequestsPath -Raw | ConvertFrom-Json
+                $decoded=Read-Requests
                 $requests=@($decoded)
             }
             if ($requests.Count -lt 1 -or $requests.Count -gt 20) { throw 'A known sequential batch must contain 1..20 commands.' }
@@ -70,8 +79,7 @@ try {
         }
         RecordStep { $result=Complete-AGTAExplorationStep $RunRoot $StepIndex $Route $ObservedResult $VerificationCommandId }
         RecordSteps {
-            if (-not $RequestsPath) { throw 'RecordSteps requires RequestsPath with reviewed route/observedResult/verificationCommandId records.' }
-            $decoded=Get-Content -LiteralPath $RequestsPath -Raw | ConvertFrom-Json
+            $decoded=Read-Requests
             foreach ($record in @($decoded)) {
                 Write-Response (Complete-AGTAExplorationStep $RunRoot $record.stepIndex $record.route $record.observedResult $record.verificationCommandId)
             }

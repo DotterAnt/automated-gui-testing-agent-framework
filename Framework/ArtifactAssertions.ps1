@@ -1,3 +1,19 @@
+function Assert-TextContains {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Result,
+          [Parameter(Mandatory)] [string[]] $Expected,
+          [string] $Message='Readback must contain every expected text fragment.')
+    $validSource=($Result.command -eq 'read-pdf' -or
+        ($Result.command -eq 'read' -and $Result.data.textSource -in @('ValuePattern','TextPattern')))
+    Assert-ExpectedResult -Condition ([bool]($Result.ok -and $validSource)) -Message "$Message Requires successful content readback, not an element name."
+    if (-not $Expected.Count -or @($Expected | Where-Object {[string]::IsNullOrWhiteSpace($_)}).Count) { throw 'Expected text fragments must not be empty.' }
+    $text=([string]$Result.data.text).Replace("`r`n","`n").Replace("`r","`n")
+    foreach ($fragment in $Expected) {
+        $normalized=$fragment.Replace("`r`n","`n").Replace("`r","`n")
+        Assert-ExpectedResult -Condition ($text.IndexOf($normalized,[StringComparison]::Ordinal) -ge 0) -Message "$Message Missing fragment: $fragment"
+    }
+}
+
 function Read-AGTAArtifactBytes {
     [CmdletBinding()]
     param(

@@ -31,6 +31,27 @@ function Add-AGTAExplorationCommand {
     return $id
 }
 
+function Assert-AGTAExplorationVerification {
+    param($Receipt)
+    $v=$Receipt
+    if (-not $v.result.ok) { throw 'Verification needs a successful command.' }
+    if ($v.command -eq 'type') {
+        $data=$v.result.data
+        if (-not $data.verificationPerformed -or $data.verified -ne $true -or
+            -not $data.verification -or $data.verification.verified -ne $true -or $data.verification.attempts -lt 1 -or
+            $null -eq $data.verification.observedLength -or $data.verification.readError -or
+            $data.verification.mode -notin @('Exact','Contains','NormalizedExact','NormalizedContains')) {
+            throw 'Typing is evidence only with successful -Verify readback; input dispatch alone is not verification.'
+        }
+        return
+    }
+    if ($v.command -notin @('read','select','observe','wait-element','wait-file','read-pdf','screenshot')) { throw 'Verification needs a successful observation command or verified typing, not just action dispatch.' }
+    if (($v.command -eq 'wait-element' -and -not $v.result.data.exists) -or
+        ($v.command -eq 'wait-file' -and -not $v.result.data.conditionMet) -or
+        ($v.command -eq 'select' -and $v.result.data.count -le 0)) { throw 'The recorded observation did not meet its postcondition.' }
+    if ($v.command -eq 'screenshot' -and -not (Test-Path -LiteralPath $v.result.data.path -PathType Leaf)) { throw 'Screenshot evidence is missing.' }
+}
+
 function Complete-AGTAExplorationStep {
     param([string]$RunRoot, [int]$StepIndex, [string]$Route, [string]$ObservedResult, [string]$VerificationCommandId)
     $paths=Get-AGTAExplorationPaths $RunRoot
@@ -41,11 +62,7 @@ function Complete-AGTAExplorationStep {
     $verification=@($records | Where-Object { $_.id -eq $VerificationCommandId })
     if ($verification.Count -ne 1) { throw 'VerificationCommandId must identify a recorded command from this CSV row.' }
     $v=$verification[0]
-    if (-not $v.result.ok -or $v.command -notin @('read','select','observe','wait-element','wait-file','read-pdf','screenshot')) { throw 'Verification needs a successful observation command, not just action dispatch.' }
-    if (($v.command -eq 'wait-element' -and -not $v.result.data.exists) -or
-        ($v.command -eq 'wait-file' -and -not $v.result.data.conditionMet) -or
-        ($v.command -eq 'select' -and $v.result.data.count -le 0)) { throw 'The recorded observation did not meet its postcondition.' }
-    if ($v.command -eq 'screenshot' -and -not (Test-Path -LiteralPath $v.result.data.path -PathType Leaf)) { throw 'Screenshot evidence is missing.' }
+    Assert-AGTAExplorationVerification $v
     $actions=@($records | Where-Object { $_.result.ok -and $_.command -in @('start','focus','click','click-coordinate','type','press-key','hotkey','drag','close-window') -and $_.timestamp -le $v.timestamp })
     if (-not $actions.Count) { throw 'Perform the row through the GUI before recording its observation.' }
     $manifest.steps=@($manifest.steps | Where-Object { $_.stepIndex -ne $StepIndex }) + @([pscustomobject]@{
@@ -123,6 +140,7 @@ function Test-AGTAExploration {
             if ($step.Count -ne 1 -or -not $step[0].route -or -not $step[0].observedResult) { throw "Exploration row $i is missing." }
             $v=@($records | Where-Object {$_.id -eq $step[0].verificationCommandId -and $_.stepIndex -eq $i -and $_.result.ok})
             if ($v.Count -ne 1) { throw "Exploration row $i has no successful verification receipt." }
+            Assert-AGTAExplorationVerification $v[0]
         }
         return @{ok=$true;path=$Path;completedAt=$m.completedAt;issues=@()}
     } catch { return @{ok=$false;path=$Path;issues=@($_.Exception.Message)} }
