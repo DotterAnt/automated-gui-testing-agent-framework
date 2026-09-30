@@ -23,6 +23,8 @@ try {
     }
     $completed=Complete-AGTAExploration $root $csv GuiNavigation
     Check (Test-AGTAExploration $completed.explorationPath $csv GuiNavigation).ok 'Complete exploration failed.'
+    $routes=Get-Content -LiteralPath $completed.routesPath -Raw | ConvertFrom-Json
+    Check ($routes.steps.Count -eq 2 -and $routes.steps[0].successfulCommands.Count -eq 2 -and $routes.steps[0].failedCommandIds.Count -eq 1) 'Route reference lost row coverage or included an unmet wait as successful.'
     Check (-not (Test-AGTAExploration $completed.explorationPath $csv VisibleControls).ok) 'Policy mismatch passed.'
     Reject { Add-AGTAExplorationCommand $root 1 click @() @{ok=$true} } 'Completed transcript was silently extended.'
     $scriptPath=Join-Path $root 'fixture.ps1'
@@ -74,6 +76,29 @@ $app=New-Object -ComObject Example.Application
     $requestsContent | ConvertTo-Json -Depth 6 | Set-Content $requests
     $batch=@(& powershell.exe -NoProfile -File (Join-Path $frameworkRoot 'Invoke-Exploration.ps1') -Action Batch -RunRoot $batchRoot -TestCaseCsv $csv -PotatoCliPath $cli -RequestsPath $requests | ForEach-Object { $_ | ConvertFrom-Json })
     Check ($LASTEXITCODE -eq 0 -and $batch.Count -eq 2 -and $batch[0].ok -and $batch[1].ok -and $batch[0].explorationCommandId -ne $batch[1].explorationCommandId) 'Known sequential batch failed or reused receipt IDs.'
+    $entry=Join-Path $frameworkRoot 'Invoke-Exploration.ps1'
+    $savedRoot=Join-Path $root 'saved configuration with spaces'
+    $begin=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Begin -RunRoot $savedRoot -TestCaseCsv $csv -PotatoCliPath $cli -InteractionPolicy VisibleControls | ConvertFrom-Json
+    Check ($begin.ok -and $begin.steps.Count -eq 2) 'Begin did not return the testcase context.'
+    $requestsContent | ConvertTo-Json -Depth 6 | Set-Content $requests
+    $saved=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsPath $requests | ForEach-Object {$_ | ConvertFrom-Json})
+    Check ($LASTEXITCODE -eq 0 -and $saved.Count -eq 2 -and $saved[0].ok) 'Batch lost persisted CSV/CLI/policy configuration.'
+    $status=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Status -RunRoot $savedRoot | ConvertFrom-Json
+    Check ($status.interactionPolicy -eq 'VisibleControls' -and $status.missingSteps.Count -eq 2 -and $status.commandCount -eq 2) 'Status hid missing rows or weakened the saved strict policy.'
+    $changed=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsPath $requests -InteractionPolicy GuiNavigation | ConvertFrom-Json
+    Check ($LASTEXITCODE -eq 1 -and -not $changed.ok) 'Persisted policy accepted a changed command policy.'
+    @(@{stepIndex=1;command='wait-file';arguments=@('-Path',(Join-Path $root 'absent'),'-TimeoutMs','0')},@{stepIndex=1;command='help';arguments=@()}) | ConvertTo-Json -Depth 6 | Set-Content $requests
+    $missed=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsPath $requests | ForEach-Object {$_ | ConvertFrom-Json})
+    Check ($LASTEXITCODE -eq 1 -and $missed.Count -eq 1 -and $missed[0].ok -and -not $missed[0].data.conditionMet) 'Batch continued after unmet wait or changed CLI dispatch semantics.'
+    $reviewed=@()
+    for ($i=1;$i -le 2;$i++) {
+        Add-AGTAExplorationCommand $savedRoot $i click @('-Name','Synthetic fixture') @{ok=$true} | Out-Null
+        $receipt=Add-AGTAExplorationCommand $savedRoot $i read @('-Name','Synthetic fixture') @{ok=$true;data=@{text='Synthetic fixture'}}
+        $reviewed+=@{stepIndex=$i;route='Synthetic fixture route';observedResult='Synthetic fixture';verificationCommandId=$receipt}
+    }
+    $reviewed | ConvertTo-Json -Depth 6 | Set-Content $requests
+    $recorded=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action RecordSteps -RunRoot $savedRoot -RequestsPath $requests | ForEach-Object {$_ | ConvertFrom-Json})
+    Check ($LASTEXITCODE -eq 0 -and $recorded.Count -eq 2 -and $recorded[1].covered -eq 2) 'Reviewed rows were not recorded in one invocation.'
     Import-Module (Join-Path $frameworkRoot 'Framework\AutomatedGuiTestingAgentFramework.psm1') -Force
     $apiRoot=Join-Path $root 'api'
     $generated=Join-Path $apiRoot 'generated'; New-Item -ItemType Directory $generated -Force | Out-Null

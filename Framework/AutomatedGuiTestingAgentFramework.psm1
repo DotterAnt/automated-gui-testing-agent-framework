@@ -1091,4 +1091,4 @@ Export-ModuleMember -Function `
     Invoke-AGTAAgentAuthoring, `
     Invoke-AGTAAgentTool, `
     Get-AGTAOpenAITools
-Export-ModuleMember -Function Get-AGTAExplorationPaths, Initialize-AGTAExploration, Add-AGTAExplorationCommand, Complete-AGTAExplorationStep, Complete-AGTAExploration, Test-AGTAExploration
+Export-ModuleMember -Function Get-AGTAExplorationPaths, Initialize-AGTAExploration, Add-AGTAExplorationCommand, Complete-AGTAExplorationStep, Complete-AGTAExploration, Test-AGTAExploration, Test-AGTAExplorationCommandSucceeded, Get-AGTAExplorationStatus

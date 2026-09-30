@@ -495,10 +495,21 @@ function Invoke-TestCleanup {
                 if ($discard) { $records += $discard }
             }
             $until = [Diagnostics.Stopwatch]::StartNew()
+            $closePasses = 1
             do {
                 $remaining = Invoke-PotatoJson 'windows' @('-ProcessId', "$($owned.Id)", '-TimeoutMs','0')
                 Assert-PotatoOk $remaining
                 if ($remaining.data.count -eq 0) { break }
+                # A native dialog can close asynchronously after its disabled
+                # parent rejected the first Close request. Rediscover before
+                # retrying only this id/start-time-owned application's windows.
+                if ($closePasses -lt 3 -and $until.ElapsedMilliseconds -lt $CloseTimeoutMs) {
+                    $live = Get-Process -Id $owned.Id -ErrorAction SilentlyContinue
+                    if (-not $live -or $live.StartTime -ne $owned.StartTime) { break }
+                    $closed = Invoke-PotatoJson 'close-window' @('-ProcessId', "$($owned.Id)", '-TimeoutMs','0')
+                    Assert-PotatoOk $closed
+                    $closePasses++
+                }
                 Start-Sleep -Milliseconds 100
             } while ($until.ElapsedMilliseconds -lt $CloseTimeoutMs)
             $records += [pscustomobject]@{action='close-owned-process';target=$owned.Id;ok=($remaining.data.count -eq 0);error=$(if ($remaining.data.count) {'Owned windows remain open.'} else {$null})}
@@ -538,12 +549,17 @@ function Invoke-TestCleanup {
     }
 
     try {
-        $result = Invoke-PotatoJson -Command 'state' -Arguments @('-Clear')
-        $records += [pscustomobject][ordered]@{
-            action = 'clear-potato-state'
-            target = 'session'
-            ok = [bool]$result.ok
-            error = $(if ($result.error) { $result.error.message } else { $null })
+        $pendingOwned = @($records | Where-Object { $_.action -eq 'close-owned-process' -and -not $_.ok })
+        if ($pendingOwned.Count) {
+            $records += [pscustomobject]@{action='preserve-potato-state';target='session';ok=$true;error=$null}
+        } else {
+            $result = Invoke-PotatoJson -Command 'state' -Arguments @('-Clear')
+            $records += [pscustomobject][ordered]@{
+                action = 'clear-potato-state'
+                target = 'session'
+                ok = [bool]$result.ok
+                error = $(if ($result.error) { $result.error.message } else { $null })
+            }
         }
     }
     catch {
@@ -723,6 +739,33 @@ function Complete-AGTAGeneratedTest {
     $final | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath $context.ResultPath -Encoding UTF8
     if ($PassThru) { return [pscustomobject]$final }
     $final | ConvertTo-Json -Depth 80 -Compress
+}
+
+function Invoke-AGTATestPlan {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [scriptblock[]]$StepBodies, [switch]$PassThru)
+    $context=Get-AGTAGeneratedTestContext
+    if ($StepBodies.Count -ne $context.Steps.Count -or @($StepBodies | Where-Object {$null -eq $_}).Count) {
+        throw 'Test plan must contain exactly one non-null body per CSV row, in order, before any GUI action.'
+    }
+    $results=@()
+    $cleanup=@()
+    $blocked=$false
+    try {
+        for ($i=0; $i -lt $StepBodies.Count; $i++) {
+            if ($blocked) {
+                $step=$context.Steps[$i]
+                $results+=New-StepResult -StepIndex ($i+1) -Action $step.Action -ExpectedResult $step.'Expected Result' -Status SKIPPED -ErrorObject 'A preceding dependent step failed.'
+                continue
+            }
+            $result=Invoke-RecordedStep -StepIndex ($i+1) -Body $StepBodies[$i]
+            $results+=$result
+            $blocked=$result.status -ne 'PASS'
+        }
+    } finally {
+        $cleanup=@(Invoke-TestCleanup)
+        Complete-AGTAGeneratedTest -StepResults $results -Cleanup $cleanup -PassThru:$PassThru
+    }
 }
 
 function Get-AGTATestExitCode {

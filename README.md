@@ -1,6 +1,6 @@
 # Automated GUI Testing Agent Framework
 
-For CSV authoring, start with `docs/AUTHORING.md` and the generated template. The contract and source modules are references for specific unresolved questions.
+For CSV authoring, read `AGENTS.md`, `docs/AUTHORING.md`, the supplied CSV and the generated template together. Start exploration with the guide's process-safe JSON Batch entrypoint; it saves session configuration and returns compact observations. Use `RecordSteps` for reviewed receipts and `Status` for progress. `Complete` exports tested command routes for reuse. The template's `Invoke-AGTATestPlan` handles sequencing, dependent skips, cleanup and result output. The contract and source modules are references for specific unresolved questions.
 
 PowerShell-only framework for turning CSV testcase descriptions into repeatable GUI automation scripts that use `potato-cli`.
 

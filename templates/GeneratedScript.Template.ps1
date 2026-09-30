@@ -31,34 +31,17 @@ if (-not $ExplorationPath) { $ExplorationPath = Join-Path $RunRoot 'logs\explora
 Assert-AGTAGeneratedScriptPreflight -ScriptPath $PSCommandPath -TestCaseCsv $TestCaseCsv -PotatoCliPath $PotatoCliPath -ExplorationPath $ExplorationPath -InteractionPolicy $InteractionPolicy | Out-Null
 
 $Context = Initialize-AGTAGeneratedTest -PotatoCliPath $PotatoCliPath -TestCaseCsv $TestCaseCsv -RunRoot $RunRoot -RequireAssertions -InteractionPolicy $InteractionPolicy -PolicyReason $PolicyReason -Transport $Transport -ExplorationPath $ExplorationPath
-$results = @()
-$cleanup = @()
-
-try {
-    for ($i = 0; $i -lt $Context.Steps.Count; $i++) {
-        $results += New-StepResult `
-            -StepIndex ($i + 1) `
-            -Action $Context.Steps[$i].Action `
-            -ExpectedResult $Context.Steps[$i].'Expected Result' `
-            -Status 'SKIPPED' `
-            -ErrorObject 'Template placeholder: implement this step with Invoke-RecordedStep.'
-    }
-
-    # Example shape for real step implementations:
-    #
-    # $results += Invoke-RecordedStep -StepIndex 1 -Body {
+# One scriptblock per CSV row, in order. Keep actions/assertions specific to the
+# testcase here; the runtime handles dependency skips, cleanup and final output.
+$StepBodies = @(
+    # {
     #     param([ref] $Commands, [ref] $Evidence)
-    #     $started = Invoke-StepCommand -Commands $Commands -Command 'start' -Arguments @('-ProcessName', 'notepad.exe', '-WaitForWindowMs', '10000')
-    #     Assert-PotatoOk -Result $started -Message 'Could not start the target app.'
-    #     Assert-ExpectedResult -Condition ([bool]$started.data.windowFound) -Message 'The target application window must be visible.'
-    #     # Invoke-StepCommand auto-registers a newly owned process for scoped cleanup.
-    #     Invoke-EvidenceScreenshot -Commands $Commands -Evidence $Evidence -FileName '01-opened.png' | Out-Null
+    #     $started = Invoke-StepCommand -Commands $Commands -Command start -Arguments @('-ProcessName','app.exe','-Maximize')
+    #     Assert-PotatoOk $started
+    #     $ready = Invoke-StepCommand -Commands $Commands -Command wait-element -Arguments @('-Name','<observed control>','-TimeoutMs','10000')
+    #     Assert-PotatoFound $ready -Message '<CSV expected result>'
     # }
-}
-finally {
-    $cleanup = @(Invoke-TestCleanup)
-}
-
-Complete-AGTAGeneratedTest -StepResults $results -Cleanup $cleanup
-
+    # Add each remaining row with its tested GUI route and expected-result assertion.
+)
+Invoke-AGTATestPlan -StepBodies $StepBodies
 exit (Get-AGTATestExitCode)

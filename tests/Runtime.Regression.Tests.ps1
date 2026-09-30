@@ -141,10 +141,23 @@ exit (Get-AGTATestExitCode)
     Check ($clickResult.data.clicked -and $script:clickArgs[-2] -eq '-Method' -and $script:clickArgs[-1] -eq 'Auto' -and $clickCommands.Count -eq 1) 'Step click did not default to Auto and record the action.'
     $cleanup=@(Invoke-TestCleanup -CloseTimeoutMs 0 -PromptTimeoutMs 0)
     Check (@($cleanup | Where-Object { $_.ok -eq $false }).Count -eq 1) 'Remaining owned window was silently accepted.'
+    Check (@($cleanup | Where-Object {$_.action -eq 'preserve-potato-state'}).Count -eq 1 -and @($cleanup | Where-Object {$_.action -eq 'clear-potato-state'}).Count -eq 0) 'Failed cleanup erased its recovery context.'
     Check ($script:closeArgs[0] -eq '-ProcessId' -and $script:closeArgs[1] -eq "$PID") 'Cleanup used broad process-name targeting.'
     $script:remaining=0
     $cleanup=@(Invoke-TestCleanup -CloseTimeoutMs 0 -PromptTimeoutMs 0)
     Check (@($cleanup | Where-Object { $_.ok -eq $false }).Count -eq 0) 'Clean ownership cleanup failed.'
+    # Plan orchestration must stop dependent GUI bodies while retaining coverage,
+    # assertions, cleanup, and a truthful failing result.
+    $ctx.Steps=@($ctx.Steps[0],$ctx.Steps[0])
+    $script:planCleanup=0; $script:dependentRan=$false
+    function Invoke-TestCleanup { $script:planCleanup++; [pscustomobject]@{action='fixture';ok=$true} }
+    $badPlan=Invoke-AGTATestPlan -StepBodies @({param($Commands,$Evidence) Assert-ExpectedResult $false 'Expected failure'}, {param($Commands,$Evidence) $script:dependentRan=$true; Assert-ExpectedResult $true 'Must not run'}) -PassThru
+    Check (-not $badPlan.ok -and $badPlan.summary.failed -eq 1 -and $badPlan.summary.skipped -eq 1 -and -not $script:dependentRan -and $script:planCleanup -eq 1 -and $badPlan.coverageOk) 'Plan lost fail-stop/cleanup/coverage semantics.'
+    $caught=$false
+    try { Invoke-AGTATestPlan -StepBodies @({throw 'Must not execute'}) -PassThru } catch { $caught=$_.Exception.Message -like 'Test plan must contain*' }
+    Check ($caught -and $script:planCleanup -eq 1) 'Incomplete plan reached execution.'
+    $goodPlan=Invoke-AGTATestPlan -StepBodies @({param($Commands,$Evidence) Assert-ExpectedResult $true 'First'}, {param($Commands,$Evidence) Assert-ExpectedResult $true 'Second'}) -PassThru
+    Check ($goodPlan.ok -and $goodPlan.summary.passed -eq 2 -and $script:planCleanup -eq 2 -and (Get-AGTATestExitCode) -eq 0) 'Passing plan did not retain existing result/exit contract.'
     "Runtime checks: $script:checks passed"
 }
 finally {

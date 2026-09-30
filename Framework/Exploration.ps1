@@ -5,13 +5,14 @@ function Get-AGTAExplorationPaths {
 }
 
 function Initialize-AGTAExploration {
-    param([string]$RunRoot, [string]$TestCaseCsv, [string]$InteractionPolicy='GuiNavigation')
+    param([string]$RunRoot, [string]$TestCaseCsv, [string]$InteractionPolicy='GuiNavigation', [string]$PotatoCliPath)
+    $RunRoot=[IO.Path]::GetFullPath($RunRoot)
     $paths=Get-AGTAExplorationPaths $RunRoot
     if (Test-Path -LiteralPath $paths.manifest) { throw 'Exploration already exists. Resume it or use a new run folder; do not overwrite evidence.' }
     $rows=@(Import-Csv -LiteralPath $TestCaseCsv)
     if (-not $rows.Count) { throw 'Exploration needs a nonempty testcase CSV.' }
     New-Item -ItemType Directory -Path (Split-Path $paths.manifest) -Force | Out-Null
-    $value=[ordered]@{schemaVersion=1;testCaseHash=(Get-FileHash -LiteralPath $TestCaseCsv -Algorithm SHA256).Hash;
+    $value=[ordered]@{schemaVersion=1;testCasePath=(Get-Item -LiteralPath $TestCaseCsv).FullName;potatoCliPath=$PotatoCliPath;testCaseHash=(Get-FileHash -LiteralPath $TestCaseCsv -Algorithm SHA256).Hash;
         interactionPolicy=$InteractionPolicy;startedAt=(Get-Date).ToString('o');completedAt=$null;completed=$false;
         stepCount=$rows.Count;steps=@();transcriptPath=$paths.transcript;transcriptHash=$null}
     $value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $paths.manifest -Encoding UTF8
@@ -70,7 +71,38 @@ function Complete-AGTAExploration {
     $manifest.completedAt=(Get-Date).ToString('o')
     $manifest.transcriptHash=(Get-FileHash -LiteralPath $paths.transcript -Algorithm SHA256).Hash
     $manifest | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $paths.manifest -Encoding UTF8
-    @{ok=$true;explorationPath=$paths.manifest;covered=$manifest.stepCount}
+    $routesPath=Join-Path $RunRoot 'logs\exploration-routes.json'
+    $routes=@(foreach ($step in ($manifest.steps | Sort-Object stepIndex)) {
+        $commands=@($receipts | Where-Object { $_.stepIndex -eq $step.stepIndex })
+        [ordered]@{stepIndex=$step.stepIndex;route=$step.route;observedResult=$step.observedResult;
+            verificationCommandId=$step.verificationCommandId;
+            successfulCommands=@($commands | Where-Object { Test-AGTAExplorationCommandSucceeded $_.result $_.command } | ForEach-Object {
+                [ordered]@{id=$_.id;command=$_.command;arguments=$_.arguments;action=$_.result.data.action}
+            });failedCommandIds=@($commands | Where-Object { -not (Test-AGTAExplorationCommandSucceeded $_.result $_.command) } | ForEach-Object {$_.id})}
+    })
+    @{note='Reference only, not a generated test. Preserve tested action arguments; discard irrelevant discovery and add real assertions. New selector constraints/routes need GUI validation.';steps=$routes} | ConvertTo-Json -Depth 24 | Set-Content -LiteralPath $routesPath -Encoding UTF8
+    @{ok=$true;explorationPath=$paths.manifest;routesPath=$routesPath;covered=$manifest.stepCount}
+}
+
+function Test-AGTAExplorationCommandSucceeded {
+    param($Result, [string]$Command)
+    return [bool]($Result.ok -and -not (
+        ($Command -eq 'wait-element' -and -not $Result.data.exists) -or
+        ($Command -eq 'wait-file' -and -not $Result.data.conditionMet)))
+}
+
+function Get-AGTAExplorationStatus {
+    param([string]$RunRoot)
+    $paths=Get-AGTAExplorationPaths $RunRoot
+    $m=Get-Content -LiteralPath $paths.manifest -Raw | ConvertFrom-Json
+    $receipts=@()
+    if (Test-Path -LiteralPath $paths.transcript) { $receipts=@(Get-Content -LiteralPath $paths.transcript | ForEach-Object { $_ | ConvertFrom-Json }) }
+    @{ok=$true;completed=$m.completed;interactionPolicy=$m.interactionPolicy;covered=$m.steps.Count;required=$m.stepCount;
+        missingSteps=@(1..$m.stepCount | Where-Object {$_ -notin @($m.steps.stepIndex)});
+        steps=$m.steps;commandCount=$receipts.Count;
+        recentFailures=@($receipts | Where-Object {-not (Test-AGTAExplorationCommandSucceeded $_.result $_.command)} | Select-Object -Last 5 | ForEach-Object { @{id=$_.id;stepIndex=$_.stepIndex;command=$_.command;error=$_.result.error} });
+        ownedProcessIds=@($receipts | Where-Object {$_.command -eq 'start' -and $_.result.ok} | ForEach-Object {$_.result.data.ownedProcessId});
+        transcriptPath=$paths.transcript;explorationPath=$paths.manifest}
 }
 
 function Test-AGTAExploration {
