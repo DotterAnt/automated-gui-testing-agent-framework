@@ -140,6 +140,7 @@ function Invoke-PotatoJson {
 
     $context = Get-AGTAGeneratedTestContext
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $Arguments=@(Resolve-AGTACommandArguments $Command $Arguments)
     $raw = @()
     $exitCode = 0
     # The run policy is fixed at initialization, including cleanup and exploration helpers.

@@ -1,4 +1,11 @@
 # Evidence-backed authoring checkpoint. This is an audit trail, not a sandbox.
+function Resolve-AGTACommandArguments {
+    param([string]$Command,[string[]]$Arguments=@())
+    $values=@($Arguments)
+    if ($Command -eq 'observe' -and -not @($values | Where-Object {$_ -match '^--?Format(?:=|$)'}).Count) { $values+=@('-Format','Compact') }
+    return $values
+}
+
 function Get-AGTAExplorationPaths {
     param([string]$RunRoot)
     $RunRoot=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RunRoot)
@@ -25,6 +32,7 @@ function Initialize-AGTAExploration {
 
 function Add-AGTAExplorationCommand {
     param([string]$RunRoot, [int]$StepIndex, [string]$Command, [string[]]$Arguments, $Result)
+    $Arguments=@(Resolve-AGTACommandArguments $Command $Arguments)
     $paths=Get-AGTAExplorationPaths $RunRoot
     $manifest=Get-Content -LiteralPath $paths.manifest -Raw | ConvertFrom-Json
     if ($manifest.completed) { throw 'Exploration is complete. Use normal runtime commands for execution.' }

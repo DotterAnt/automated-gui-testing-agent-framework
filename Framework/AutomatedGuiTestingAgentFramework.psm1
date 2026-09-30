@@ -364,6 +364,7 @@ function Invoke-AGTAPotatoJson {
     }
 
     $logPath = Join-Path -Path $RunRoot -ChildPath 'logs\potato-commands.jsonl'
+    $Arguments=@(Resolve-AGTACommandArguments $Command $Arguments)
     if (@($Arguments | Where-Object { $_ -match '^--?InteractionPolicy(?:=|$)' }).Count) { throw 'Command policy overrides are forbidden.' }
     if ($Command -eq 'start') { $Arguments = @($Arguments) + @('-RequireNewProcess','true') }
     $Arguments = @($Arguments) + @('-InteractionPolicy', $InteractionPolicy)

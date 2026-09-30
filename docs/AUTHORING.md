@@ -63,6 +63,8 @@ API authoring uses run_potato with stepIndex and record_exploration_step, then t
 
 ## Discover once, act on what was observed
 
+Framework observations default to Compact in shell exploration, API exploration and generated execution; explicit Format Full is preserved. Receipts record the effective format. Reuse tested arguments, including input pacing and focus guards. A newly launched process can restore prior documents: inspect the initial state and reach a verified blank document through the GUI before typing; restarting alone is not a reset.
+
 - Use click's default Auto. It chooses supported UIA patterns or a visible mouse click. Explicit Invoke is only for a confirmed InvokePattern. A failed explicit method is not evidence that the desired action happened.
 - Click requires one visible enabled match by default. If it returns AmbiguousTarget, no input was sent: use error.candidates to add an observed role, ID, class or parent scope. A navigation item and a submit button can share a label, as can document-close and application-close controls. Do not disable uniqueness to avoid resolving the actual ambiguity.
 - observe is compact through the exploration entrypoint. For a native dialog use observe -Scope FocusedWindow -Depth 4 -MaxElements 80. This inspects the actual foreground window only after proving it belongs to the working application. select, read, click and type also accept -Scope FocusedWindow. It avoids searching a disabled parent, and does not depend on UIA IsModal.
@@ -75,6 +77,10 @@ API authoring uses run_potato with stepIndex and record_exploration_step, then t
 
 ## Policy and input
 
+When observation shows a control but a filtered selector misses it, the CLI now retries a bounded traversal using the same child enumeration as observe. SearchIncomplete requires narrowing to an observed container. Use the returned selector, including a role that disambiguates a menu item from its text child; avoid trying guessed variants or redundant Recurse flags.
+
+For an observed system-hosted dialog outside the owner chain, use `-Scope ForegroundWindow -WindowSelectorJson '{"Name":"<observed exact title>","ClassName":"<observed exact class>"}'` plus fallback reason/evidence. This permits scoped observation/read/selector clicks without adopting the broker process or making it a cleanup target. Ordinary FocusedWindow remains restricted to the application owner. Prefer the guarded scope to fixed coordinates. Wait for the selected state and visible enabled submit control (`wait-element -InteractiveOnly`) before clicking once; then wait for the next observed dialog. Scoped waits tolerate a temporary owner/foreground mismatch, so do not encode repeated blind submission clicks and fixed multi-second sleeps as a reliable route.
+
 GuiNavigation is the default throughout exploration, execution and cleanup. Preserve an explicit VisibleControls requirement, which forbids press-key. Application hotkeys, Ctrl+A clearing, clipboard, object models, file-association opening and directly created expected output are prohibited by default. A selector failure never permits a non-GUI bypass or private SendKeys/SendInput backend.
 
 press-key accepts Tab, ShiftTab, Enter, Escape and arrow keys with FallbackReason/FallbackEvidence describing the observed state. Enter/Escape are single actions followed by observation; required menu/button routes still apply. type -TargetMode Focused accepts literal text at existing confirmed application focus, with the same evidence requirement. It does not implicitly refocus or clear, rejects explicit read-only controls and embedded navigation characters, and needs a separate result assertion.
@@ -84,6 +90,8 @@ For a custom editor/canvas, visibly enter text-edit mode and use `type -TargetMo
 Focused input confirms the keyboard destination, not a caret or text-edit mode. Avoid batching a new coordinate guess, an unread observation and typing across an unknown transition. Read supported text patterns or inspect the resulting screenshot before continuing, and verify persistence/content as required. A screenshot with no visual inspection is insufficient. Preserve the transition guard in generated execution rather than adding whole-tree observations as timing delays.
 
 Normal type with a selector checks writability and focus, so a separate click is usually unnecessary. PreDelete uses UIA text selection and Backspace. type -Verify polls current readback without committing or resending. For commit-on-exit editors, type once, commit through a visible action/permitted Enter, then read/assert. NormalizedExact/NormalizedContains reconcile line endings. Relative element clicks and selector drag/drop use live bounds; verify the actual resulting state.
+
+Literal input defaults to paced Unicode scalars (`InputDelayMs 5`), with a native focus check during sending. `InputDelayMs 0` explicitly opts into bursts; legacy TypeByCharacter uses 50 ms. Begin with the default, verify real text, and increase pacing only for an observed loss. Preserve tested pacing in generation. Do not resend on a mismatch without first inspecting and resetting the intended field through the GUI. A character count or line/column label cannot prove exact content: use Verify/read plus Assert-TextContains, which normalizes CR/LF. Status labels are supplementary evidence only.
 
 Use click Auto for a discovered popup item. It now performs the supported action without refocusing the parent/item first, which can dismiss a menu. Explicit Focus/ElementFocus overrides are for an observed need. A TargetNotFound failure is not-dispatched; inspect the current scope and actual label before changing the route. Do not switch to coordinates solely because a guessed role/name failed.
 

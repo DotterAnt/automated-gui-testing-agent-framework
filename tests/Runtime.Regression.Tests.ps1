@@ -59,6 +59,24 @@ try {
     Check ($focusSummary.errorType -eq 'InputFocusNotReady' -and $focusSummary.inputFocus.focusHandle -eq 123 -and -not $focusSummary.inputFocus.owned -and $focusSummary.outcome -eq 'not-dispatched') 'Compact command summary dropped the actionable focus diagnosis.'
     $help=Invoke-PotatoJson help @('-Topic','type')
     Check ($help.ok -and $ctx.Timing.commandCount -eq 1) 'In-process transport/timing failed.'
+    $realModule=$ctx.CliModule
+    $fixtureModule=New-Module -ScriptBlock {
+        function Invoke-PotatoCliCommand {
+            param($Command,$Arguments,$CliRoot,[switch]$AsObject)
+            $position=[array]::IndexOf($Arguments,'-Format')
+            @{ok=$true;command=$Command;durationMs=0;data=@{format=$(if ($position -ge 0) {$Arguments[$position+1]} else {'Full'})}}
+        }
+        Export-ModuleMember Invoke-PotatoCliCommand
+    }
+    $ctx.CliModule=$fixtureModule
+    try {
+        $defaultObserve=Invoke-PotatoJson observe @('-Depth','3')
+        Check ($defaultObserve.data.format -eq 'Compact') 'Generated observation default differs from exploration.'
+        $fullObserve=Invoke-PotatoJson observe @('-Format','Full')
+        Check ($fullObserve.data.format -eq 'Full') 'Explicit full observation was overridden.'
+        $lastLog=Get-Content $ctx.CommandLogPath -Tail 2 | ForEach-Object {$_ | ConvertFrom-Json}
+        Check ($lastLog[0].arguments -contains 'Compact' -and $lastLog[1].arguments -contains 'Full') 'Runtime transcript hid effective observation arguments.'
+    } finally {$ctx.CliModule=$realModule;Remove-Module $fixtureModule}
     $blocked=Invoke-PotatoJson hotkey @('-Keys','^s')
     Check (-not $blocked.ok -and -not $ctx.PolicyCompliant) 'Blocked policy did not invalidate the run.'
     $pass=Invoke-RecordedStep 1 { param($Commands,$Evidence) Assert-ExpectedResult $true 'Fixture verified' }

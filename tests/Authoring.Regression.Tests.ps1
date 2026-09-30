@@ -22,6 +22,11 @@ try {
     Check (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=1}}}).eligible 'Window observation was rejected as evidence.'
     Check (-not (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=0}}}).eligible) 'Empty window observation was accepted as evidence.'
     Check (-not (Get-AGTAExplorationVerificationInfo @{command='type';result=@{ok=$true;data=@{typed=$true;inputFocus=@{source='Win32';native=@{ready=$true}}}}}).eligible) 'Native focus readiness was confused with content verification.'
+    $observation=Add-AGTAExplorationCommand $root 1 observe @('-Depth','3') @{ok=$true;data=@{elements=@()}}
+    $receipt=Get-Content (Get-AGTAExplorationPaths $root).transcript -Tail 1 | ConvertFrom-Json
+    Check ($receipt.id -eq $observation -and $receipt.arguments -contains 'Compact') 'Exploration receipt lost the shared observation default.'
+    $values=@(Resolve-AGTACommandArguments observe @('-Format=Full'))
+    Check ($values.Count -eq 1 -and $values[0] -eq '-Format=Full') 'Shared argument normalization overwrote explicit format syntax.'
     $plain=Add-AGTAExplorationCommand $root 1 type @('-Text','fixture') @{ok=$true;data=@{typed=$true;verificationPerformed=$false}}
     Reject { Complete-AGTAExplorationStep $root 1 'Typed fixture' 'Unverified text' $plain } 'Unverified typing passed as evidence.'
     $verified=Add-AGTAExplorationCommand $root 1 type @('-Text','fixture','-Verify') @{ok=$true;data=@{typed=$true;verificationPerformed=$true;verified=$true;verification=@{verified=$true;mode='Exact';attempts=1;observedLength=7;readError=$null}}}
@@ -47,7 +52,7 @@ try {
     Check (-not (Test-AGTAExploration $completed.explorationPath $csv GuiNavigation).ok) 'Execution gate accepted unverified typing receipt.'
     $savedManifest | Set-Content $completed.explorationPath
     $routes=Get-Content -LiteralPath $completed.routesPath -Raw | ConvertFrom-Json
-    Check ($routes.steps.Count -eq 2 -and $routes.steps[0].successfulCommands.Count -eq 4 -and $routes.steps[0].failedCommandIds.Count -eq 1) 'Route reference lost row coverage or included an unmet wait as successful.'
+    Check ($routes.steps.Count -eq 2 -and $routes.steps[0].successfulCommands.Count -eq 5 -and $routes.steps[0].failedCommandIds.Count -eq 1) 'Route reference lost row coverage or included an unmet wait as successful.'
     Check (-not (Test-AGTAExploration $completed.explorationPath $csv VisibleControls).ok) 'Policy mismatch passed.'
     Reject { Add-AGTAExplorationCommand $root 1 click @() @{ok=$true} } 'Completed transcript was silently extended.'
     $scriptPath=Join-Path $root 'fixture.ps1'
