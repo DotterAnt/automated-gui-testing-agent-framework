@@ -17,6 +17,13 @@ try {
     Complete-AGTAExplorationStep $testRoot 1 'Synthetic test fixture route' 'Fixture verified' $receipt | Out-Null
     Complete-AGTAExploration $testRoot $csv GuiNavigation | Out-Null
     $ctx=Initialize-AGTAGeneratedTest -PotatoCliPath $cliPath -TestCaseCsv $csv -RunRoot $testRoot
+    Push-Location $testRoot
+    try {
+        $relative=Initialize-AGTAGeneratedTest -PotatoCliPath $cliPath -TestCaseCsv '.\case.csv' -RunRoot '.\relative run' -ExplorationPath '.\logs\exploration.json'
+        Check ($relative.RunRoot -eq (Join-Path $testRoot 'relative run') -and $relative.ExecutionEvidenceRoot.StartsWith($relative.RunRoot) -and [IO.Path]::IsPathRooted($relative.ExecutionEvidenceRoot)) 'Runtime retained relative GUI output paths or used the process cwd instead of PowerShell location.'
+        Check ($relative.TestCaseCsv -eq $csv -and [IO.Path]::IsPathRooted($relative.CommandLogPath) -and [IO.Path]::IsPathRooted($relative.ExplorationPath)) 'Runtime left relative input/log/manifest paths in the context.'
+    } finally { Pop-Location }
+    $ctx=Initialize-AGTAGeneratedTest -PotatoCliPath $cliPath -TestCaseCsv $csv -RunRoot $testRoot
     $helper=Get-AGTARuntimeHelp -Name Assert-ArtifactPrefix
     Check ($helper.available -and $helper.sourcePath -like '*ArtifactAssertions.ps1' -and $helper.syntax -match 'ExpectedBytes') 'Imported artifact helper was hidden from runtime help.'
     $helpRaw=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $frameworkRoot 'Get-RuntimeHelp.ps1') -Name Assert-FileWait
@@ -80,6 +87,7 @@ try {
     Check ($content.status -eq 'PASS') 'Read-only PDF content was rejected.'
     $final=Complete-AGTAGeneratedTest @($pass) @(@{ok=$false;error='cleanup fixture'}) -PassThru
     Check (-not $final.ok -and (Get-AGTATestExitCode) -eq 1) 'Cleanup failure passed.'
+    Check (-not $final.summary.cleanupOk) 'Concise result summary hid failed cleanup.'
     $final=Complete-AGTAGeneratedTest @() @() -PassThru
     Check (-not $final.ok -and -not $final.coverageOk) 'Missing CSV row passed.'
     $final=Complete-AGTAGeneratedTest @($pass,$pass) @() -PassThru
@@ -157,6 +165,26 @@ exit (Get-AGTATestExitCode)
     $script:remaining=0
     $cleanup=@(Invoke-TestCleanup -CloseTimeoutMs 0 -PromptTimeoutMs 0)
     Check (@($cleanup | Where-Object { $_.ok -eq $false }).Count -eq 0) 'Clean ownership cleanup failed.'
+    # Exit between a window snapshot and the next owner check must not report
+    # the stale snapshot as a cleanup failure or target a reused PID.
+    $script:remaining=1; $script:ownerChecks=0
+    function Get-Process {
+        param($Id)
+        $script:ownerChecks++
+        if ($script:ownerChecks -eq 1) { Microsoft.PowerShell.Management\Get-Process -Id $Id }
+    }
+    $cleanup=@(Invoke-TestCleanup -CloseTimeoutMs 500 -PromptTimeoutMs 0)
+    Check (@($cleanup | Where-Object {$_.ok -eq $false}).Count -eq 0 -and @($cleanup | Where-Object {$_.action -eq 'clear-potato-state'}).Count -eq 1) 'Exited owner was reported as still open from a stale window snapshot.'
+    $script:ownerChecks=0
+    function Get-Process {
+        param($Id)
+        $script:ownerChecks++
+        $live=Microsoft.PowerShell.Management\Get-Process -Id $Id
+        if ($script:ownerChecks -eq 1) { return $live }
+        [pscustomobject]@{Id=$Id;StartTime=$live.StartTime.AddSeconds(1)}
+    }
+    $cleanup=@(Invoke-TestCleanup -CloseTimeoutMs 0 -PromptTimeoutMs 0)
+    Check (@($cleanup | Where-Object {$_.ok -eq $false}).Count -eq 0 -and $script:ownerChecks -eq 2) 'Reused PID was treated as the original owned process at the deadline.'
     # Plan orchestration must stop dependent GUI bodies while retaining coverage,
     # assertions, cleanup, and a truthful failing result.
     $ctx.Steps=@($ctx.Steps[0],$ctx.Steps[0])

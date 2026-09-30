@@ -21,6 +21,12 @@ function Initialize-AGTAGeneratedTest {
         [ValidateSet('InProcess','Process')] [string] $Transport = 'InProcess'
     )
 
+    # PowerShell's current location can differ from the process current directory.
+    # GUI filename fields need absolute filesystem paths in either transport.
+    $RunRoot=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RunRoot)
+    $PotatoCliPath=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($PotatoCliPath)
+    $TestCaseCsv=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($TestCaseCsv)
+    if ($ExplorationPath) { $ExplorationPath=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ExplorationPath) }
     if (-not (Test-Path -LiteralPath $PotatoCliPath)) {
         throw "PoTATo CLI was not found: $PotatoCliPath"
     }
@@ -505,13 +511,29 @@ function Invoke-TestCleanup {
                 # retrying only this id/start-time-owned application's windows.
                 if ($closePasses -lt 3 -and $until.ElapsedMilliseconds -lt $CloseTimeoutMs) {
                     $live = Get-Process -Id $owned.Id -ErrorAction SilentlyContinue
-                    if (-not $live -or $live.StartTime -ne $owned.StartTime) { break }
+                    if (-not $live -or $live.StartTime -ne $owned.StartTime) {
+                        # The original process exited after the window snapshot.
+                        # A reused PID belongs to somebody else; never close it.
+                        $remaining=[pscustomobject]@{data=@{count=0;windows=@()}}
+                        break
+                    }
                     $closed = Invoke-PotatoJson 'close-window' @('-ProcessId', "$($owned.Id)", '-TimeoutMs','0')
                     Assert-PotatoOk $closed
                     $closePasses++
                 }
                 Start-Sleep -Milliseconds 100
             } while ($until.ElapsedMilliseconds -lt $CloseTimeoutMs)
+            if ($remaining.data.count -gt 0) {
+                # The last Close can complete while its provider call consumes
+                # the remaining deadline. Report a fresh state, not that stale view.
+                $live=Get-Process -Id $owned.Id -ErrorAction SilentlyContinue
+                if (-not $live -or $live.StartTime -ne $owned.StartTime) {
+                    $remaining=[pscustomobject]@{data=@{count=0;windows=@()}}
+                } else {
+                    $remaining=Invoke-PotatoJson 'windows' @('-ProcessId', "$($owned.Id)", '-TimeoutMs','0')
+                    Assert-PotatoOk $remaining
+                }
+            }
             $records += [pscustomobject]@{action='close-owned-process';target=$owned.Id;ok=($remaining.data.count -eq 0);error=$(if ($remaining.data.count) {'Owned windows remain open.'} else {$null})}
         }
         catch { $records += [pscustomobject]@{action='close-owned-process';target=$owned.Id;ok=$false;error=$_.Exception.Message} }
@@ -706,6 +728,8 @@ function Complete-AGTAGeneratedTest {
     }
     $validStatuses = @($StepResults | Where-Object { $_.status -notin @('PASS', 'FAIL', 'SKIPPED') }).Count -eq 0
     $cleanupOk = @($Cleanup | Where-Object { $_.ok -ne $true }).Count -eq 0
+    $summary.cleanupOk=$cleanupOk
+    $summary.failedSteps=@($StepResults | Where-Object {$_.status -eq 'FAIL'} | ForEach-Object { @{stepIndex=$_.stepIndex;error=$_.error} })
     $assertionsOk = $true
     if ($context.RequireAssertions) {
         foreach ($step in $StepResults) {
@@ -715,6 +739,8 @@ function Complete-AGTAGeneratedTest {
     $ok = ($context.PolicyCompliant -and $coverageOk -and $validStatuses -and $cleanupOk -and $assertionsOk -and $summary.failed -eq 0 -and $summary.skipped -eq 0)
     $final = [ordered]@{
         ok = $ok
+        summary = $summary
+        cleanupOk = $cleanupOk
         interactionPolicy = @{ mode=$context.InteractionPolicy; reason=$context.PolicyReason; compliant=$context.PolicyCompliant; assessment='Recorded CLI policy and static script checks; external activity is not sandboxed.'; scriptAuditPerformed=($null -ne $context.ScriptAudit) }
         transport = $context.Transport
         timing = $context.Timing
@@ -724,11 +750,9 @@ function Complete-AGTAGeneratedTest {
         startedAt = $context.StartedAt.ToString('o')
         finishedAt = (Get-Date).ToString('o')
         steps = @($StepResults)
-        summary = $summary
         artifacts = $artifacts
         cleanup = @($Cleanup)
         coverageOk = $coverageOk
-        cleanupOk = $cleanupOk
         assertionsOk = $assertionsOk
     }
 

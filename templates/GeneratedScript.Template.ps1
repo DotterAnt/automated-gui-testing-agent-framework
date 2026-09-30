@@ -31,6 +31,9 @@ if (-not $ExplorationPath) { $ExplorationPath = Join-Path $RunRoot 'logs\explora
 Assert-AGTAGeneratedScriptPreflight -ScriptPath $PSCommandPath -TestCaseCsv $TestCaseCsv -PotatoCliPath $PotatoCliPath -ExplorationPath $ExplorationPath -InteractionPolicy $InteractionPolicy | Out-Null
 
 $Context = Initialize-AGTAGeneratedTest -PotatoCliPath $PotatoCliPath -TestCaseCsv $TestCaseCsv -RunRoot $RunRoot -RequireAssertions -InteractionPolicy $InteractionPolicy -PolicyReason $PolicyReason -Transport $Transport -ExplorationPath $ExplorationPath
+$RunRoot = $Context.RunRoot
+# Build GUI output paths from the absolute context, for example:
+# $OutputPath = Join-Path $Context.ExecutionEvidenceRoot 'output.ext'
 # One scriptblock per CSV row, in order. Keep actions/assertions specific to the
 # testcase here; the runtime handles dependency skips, cleanup and final output.
 $StepBodies = @(

@@ -584,7 +584,7 @@ function Get-AGTAOpenAITools {
             name = 'record_exploration_step'
             description = 'Record a completed CSV row after performing its GUI route and observing its expected result. All rows are required before development.'
             parameters = @{ type='object'; required=@('stepIndex','route','observedResult','verificationCommandId'); additionalProperties=$false;
-                properties=@{stepIndex=@{type='integer'};route=@{type='string'};observedResult=@{type='string'};verificationCommandId=@{type='string'}} }
+                properties=@{stepIndex=@{type='integer'};route=@{type='string'};observedResult=@{type='string'};verificationCommandId=@{type='string'};verificationCommandIds=@{type='array';items=@{type='string'}}} }
         },
         @{
             type = 'function'
@@ -702,12 +702,13 @@ function Invoke-AGTAAgentTool {
             if ($Context.CurrentStage -eq 'exploration' -and $command -ne 'help') {
                 $id=Add-AGTAExplorationCommand $Context.Run.runRoot $Arguments.stepIndex $command $args $result
                 $result | Add-Member -NotePropertyName explorationCommandId -NotePropertyValue $id -Force
+                $result | Add-Member -NotePropertyName verification -NotePropertyValue (Get-AGTAExplorationVerificationInfo @{command=$command;result=$result}) -Force
             }
             return $result
         }
         'record_exploration_step' {
             Assert-AGTAAuthoringStage -Context $Context -AllowedStages @('exploration') -ToolName $Name
-            return Complete-AGTAExplorationStep $Context.Run.runRoot $Arguments.stepIndex $Arguments.route $Arguments.observedResult $Arguments.verificationCommandId
+            return Complete-AGTAExplorationStep $Context.Run.runRoot $Arguments.stepIndex $Arguments.route $Arguments.observedResult $Arguments.verificationCommandId $Arguments.verificationCommandIds
         }
         'write_generated_script' {
             Assert-AGTAAuthoringStage -Context $Context -AllowedStages @('development_iteration') -ToolName $Name
@@ -1091,4 +1092,4 @@ Export-ModuleMember -Function `
     Invoke-AGTAAgentAuthoring, `
     Invoke-AGTAAgentTool, `
     Get-AGTAOpenAITools
-Export-ModuleMember -Function Get-AGTAExplorationPaths, Initialize-AGTAExploration, Add-AGTAExplorationCommand, Complete-AGTAExplorationStep, Complete-AGTAExploration, Test-AGTAExploration, Test-AGTAExplorationCommandSucceeded, Get-AGTAExplorationStatus
+Export-ModuleMember -Function Get-AGTAExplorationPaths, Initialize-AGTAExploration, Add-AGTAExplorationCommand, Complete-AGTAExplorationStep, Complete-AGTAExploration, Test-AGTAExploration, Test-AGTAExplorationCommandSucceeded, Get-AGTAExplorationStatus, Get-AGTAExplorationVerificationInfo

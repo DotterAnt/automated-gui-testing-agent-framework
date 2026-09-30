@@ -6,7 +6,7 @@ function Get-AGTAExplorationPaths {
 
 function Initialize-AGTAExploration {
     param([string]$RunRoot, [string]$TestCaseCsv, [string]$InteractionPolicy='GuiNavigation', [string]$PotatoCliPath)
-    $RunRoot=[IO.Path]::GetFullPath($RunRoot)
+    $RunRoot=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RunRoot)
     $paths=Get-AGTAExplorationPaths $RunRoot
     if (Test-Path -LiteralPath $paths.manifest) { throw 'Exploration already exists. Resume it or use a new run folder; do not overwrite evidence.' }
     $rows=@(Import-Csv -LiteralPath $TestCaseCsv)
@@ -45,28 +45,38 @@ function Assert-AGTAExplorationVerification {
         }
         return
     }
-    if ($v.command -notin @('read','select','observe','wait-element','wait-file','read-pdf','screenshot')) { throw 'Verification needs a successful observation command or verified typing, not just action dispatch.' }
+    if ($v.command -notin @('read','select','windows','observe','wait-element','wait-file','read-pdf','screenshot')) { throw 'Verification needs a successful observation command or verified typing, not just action dispatch.' }
     if (($v.command -eq 'wait-element' -and -not $v.result.data.exists) -or
         ($v.command -eq 'wait-file' -and -not $v.result.data.conditionMet) -or
-        ($v.command -eq 'select' -and $v.result.data.count -le 0)) { throw 'The recorded observation did not meet its postcondition.' }
+        ($v.command -in @('select','windows') -and $v.result.data.count -le 0)) { throw 'The recorded observation did not meet its postcondition.' }
     if ($v.command -eq 'screenshot' -and -not (Test-Path -LiteralPath $v.result.data.path -PathType Leaf)) { throw 'Screenshot evidence is missing.' }
 }
 
+function Get-AGTAExplorationVerificationInfo {
+    param($Receipt)
+    try { Assert-AGTAExplorationVerification $Receipt; return @{eligible=$true} }
+    catch { return @{eligible=$false;note=$_.Exception.Message} }
+}
+
 function Complete-AGTAExplorationStep {
-    param([string]$RunRoot, [int]$StepIndex, [string]$Route, [string]$ObservedResult, [string]$VerificationCommandId)
+    param([string]$RunRoot, [int]$StepIndex, [string]$Route, [string]$ObservedResult, [string]$VerificationCommandId, [string[]]$VerificationCommandIds=@())
     $paths=Get-AGTAExplorationPaths $RunRoot
     $manifest=Get-Content -LiteralPath $paths.manifest -Raw | ConvertFrom-Json
     if ($manifest.completed) { throw 'Exploration is already complete.' }
     if ([string]::IsNullOrWhiteSpace($Route) -or [string]::IsNullOrWhiteSpace($ObservedResult)) { throw 'Record the performed GUI route and observed expected result, not a plan.' }
     $records=@(Get-Content -LiteralPath $paths.transcript | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.stepIndex -eq $StepIndex })
-    $verification=@($records | Where-Object { $_.id -eq $VerificationCommandId })
-    if ($verification.Count -ne 1) { throw 'VerificationCommandId must identify a recorded command from this CSV row.' }
-    $v=$verification[0]
-    Assert-AGTAExplorationVerification $v
-    $actions=@($records | Where-Object { $_.result.ok -and $_.command -in @('start','focus','click','click-coordinate','type','press-key','hotkey','drag','close-window') -and $_.timestamp -le $v.timestamp })
-    if (-not $actions.Count) { throw 'Perform the row through the GUI before recording its observation.' }
+    $ids=@(@($VerificationCommandId)+@($VerificationCommandIds) | Where-Object {$_} | Select-Object -Unique)
+    if (-not $ids.Count) { throw 'Provide VerificationCommandId or VerificationCommandIds for the row observations.' }
+    foreach ($id in $ids) {
+        $verification=@($records | Where-Object { $_.id -eq $id })
+        if ($verification.Count -ne 1) { throw 'Each verification ID must identify a recorded command from this CSV row.' }
+        $v=$verification[0]
+        Assert-AGTAExplorationVerification $v
+        $actions=@($records | Where-Object { $_.result.ok -and $_.command -in @('start','focus','click','click-coordinate','type','press-key','hotkey','drag','close-window') -and $_.timestamp -le $v.timestamp })
+        if (-not $actions.Count) { throw 'Perform the row through the GUI before recording its observation.' }
+    }
     $manifest.steps=@($manifest.steps | Where-Object { $_.stepIndex -ne $StepIndex }) + @([pscustomobject]@{
-        stepIndex=$StepIndex;route=$Route;observedResult=$ObservedResult;verificationCommandId=$VerificationCommandId;commandIds=@($records.id);recordedAt=(Get-Date).ToString('o')})
+        stepIndex=$StepIndex;route=$Route;observedResult=$ObservedResult;verificationCommandId=$ids[0];verificationCommandIds=$ids;commandIds=@($records.id);recordedAt=(Get-Date).ToString('o')})
     $manifest | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $paths.manifest -Encoding UTF8
     @{ok=$true;stepIndex=$StepIndex;covered=$manifest.steps.Count;required=$manifest.stepCount}
 }
@@ -93,6 +103,7 @@ function Complete-AGTAExploration {
         $commands=@($receipts | Where-Object { $_.stepIndex -eq $step.stepIndex })
         [ordered]@{stepIndex=$step.stepIndex;route=$step.route;observedResult=$step.observedResult;
             verificationCommandId=$step.verificationCommandId;
+            verificationCommandIds=@($step.verificationCommandIds);
             successfulCommands=@($commands | Where-Object { Test-AGTAExplorationCommandSucceeded $_.result $_.command } | ForEach-Object {
                 [ordered]@{id=$_.id;command=$_.command;arguments=$_.arguments;action=$_.result.data.action}
             });failedCommandIds=@($commands | Where-Object { -not (Test-AGTAExplorationCommandSucceeded $_.result $_.command) } | ForEach-Object {$_.id})}
@@ -138,9 +149,13 @@ function Test-AGTAExploration {
         for ($i=1;$i -le $rows.Count;$i++) {
             $step=@($m.steps | Where-Object {$_.stepIndex -eq $i})
             if ($step.Count -ne 1 -or -not $step[0].route -or -not $step[0].observedResult) { throw "Exploration row $i is missing." }
-            $v=@($records | Where-Object {$_.id -eq $step[0].verificationCommandId -and $_.stepIndex -eq $i -and $_.result.ok})
-            if ($v.Count -ne 1) { throw "Exploration row $i has no successful verification receipt." }
-            Assert-AGTAExplorationVerification $v[0]
+            $ids=@(@($step[0].verificationCommandId)+@($step[0].verificationCommandIds) | Where-Object {$_} | Select-Object -Unique)
+            if (-not $ids.Count) { throw "Exploration row $i has no verification receipt." }
+            foreach ($id in $ids) {
+                $v=@($records | Where-Object {$_.id -eq $id -and $_.stepIndex -eq $i -and $_.result.ok})
+                if ($v.Count -ne 1) { throw "Exploration row $i has no successful verification receipt for $id." }
+                Assert-AGTAExplorationVerification $v[0]
+            }
         }
         return @{ok=$true;path=$Path;completedAt=$m.completedAt;issues=@()}
     } catch { return @{ok=$false;path=$Path;issues=@($_.Exception.Message)} }

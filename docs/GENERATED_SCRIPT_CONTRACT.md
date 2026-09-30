@@ -6,6 +6,8 @@ Generated testcase scripts must follow this contract so different agents and API
 
 ## Parameters
 
+Runtime initialization resolves RunRoot, CSV, CLI and exploration paths against the PowerShell current location. All context output/evidence/log paths are absolute; derive GUI filenames from Context.ExecutionEvidenceRoot. Result summary.failedSteps and cleanupOk appear before the detailed step transcript to support recovery decisions.
+
 Every generated script must accept the first three parameters. It should also accept optional `-FrameworkRoot` for explicit runtime resolution:
 
 ```powershell

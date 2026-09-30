@@ -14,6 +14,7 @@ param(
     [string]$Route,
     [string]$ObservedResult,
     [string]$VerificationCommandId,
+    [string[]]$VerificationCommandIds=@(),
     [ValidateSet('Compact','Full')] [string]$OutputMode='Compact'
 )
 $ErrorActionPreference='Stop'
@@ -31,12 +32,12 @@ function Write-Response($Result) {
     if ($OutputMode -eq 'Compact' -and $Result.explorationCommandId) {
         # Complete command results remain in the transcript; never truncate readback.
         $Result=[ordered]@{ok=$Result.ok;command=$Result.command;data=$Result.data;error=$Result.error;
-            outcome=$Result.outcome;durationMs=$Result.durationMs;explorationCommandId=$Result.explorationCommandId}
+            outcome=$Result.outcome;durationMs=$Result.durationMs;explorationCommandId=$Result.explorationCommandId;verification=$Result.verification}
     }
     $Result | ConvertTo-Json -Depth 80 -Compress
 }
 try {
-    $RunRoot=[IO.Path]::GetFullPath($RunRoot)
+    $RunRoot=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RunRoot)
     $paths=Get-AGTAExplorationPaths $RunRoot
     if ($Action -ne 'Begin') {
         $m=Get-Content -LiteralPath $paths.manifest -Raw | ConvertFrom-Json
@@ -72,16 +73,17 @@ try {
                 $result=Invoke-AGTAPotatoJson -PotatoCliPath $PotatoCliPath -Command $request.command -Arguments $values -RunRoot $RunRoot -InteractionPolicy $InteractionPolicy
                 $id=Add-AGTAExplorationCommand $RunRoot $request.stepIndex $request.command $values $result
                 $result | Add-Member -NotePropertyName explorationCommandId -NotePropertyValue $id -Force
+                $result | Add-Member -NotePropertyName verification -NotePropertyValue (Get-AGTAExplorationVerificationInfo @{command=$request.command;result=$result}) -Force
                 Write-Response $result
                 if (-not (Test-AGTAExplorationCommandSucceeded $result $request.command)) { exit 1 }
             }
             return
         }
-        RecordStep { $result=Complete-AGTAExplorationStep $RunRoot $StepIndex $Route $ObservedResult $VerificationCommandId }
+        RecordStep { $result=Complete-AGTAExplorationStep $RunRoot $StepIndex $Route $ObservedResult $VerificationCommandId $VerificationCommandIds }
         RecordSteps {
             $decoded=Read-Requests
             foreach ($record in @($decoded)) {
-                Write-Response (Complete-AGTAExplorationStep $RunRoot $record.stepIndex $record.route $record.observedResult $record.verificationCommandId)
+                Write-Response (Complete-AGTAExplorationStep $RunRoot $record.stepIndex $record.route $record.observedResult $record.verificationCommandId $record.verificationCommandIds)
             }
             return
         }

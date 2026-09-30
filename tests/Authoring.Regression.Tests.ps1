@@ -13,6 +13,8 @@ try {
     Initialize-AGTAExploration $root $csv GuiNavigation | Out-Null
     Reject { Complete-AGTAExploration $root $csv GuiNavigation } 'Empty exploration passed.'
     Reject { Complete-AGTAExplorationStep $root 1 'route' 'result' 'fabricated-id' } 'Invented evidence passed.'
+    Check (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=1}}}).eligible 'Window observation was rejected as evidence.'
+    Check (-not (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=0}}}).eligible) 'Empty window observation was accepted as evidence.'
     $plain=Add-AGTAExplorationCommand $root 1 type @('-Text','fixture') @{ok=$true;data=@{typed=$true;verificationPerformed=$false}}
     Reject { Complete-AGTAExplorationStep $root 1 'Typed fixture' 'Unverified text' $plain } 'Unverified typing passed as evidence.'
     $verified=Add-AGTAExplorationCommand $root 1 type @('-Text','fixture','-Verify') @{ok=$true;data=@{typed=$true;verificationPerformed=$true;verified=$true;verification=@{verified=$true;mode='Exact';attempts=1;observedLength=7;readError=$null}}}
@@ -120,15 +122,27 @@ $app=New-Object -ComObject Example.Application
     @(@{stepIndex=1;command='wait-file';arguments=@('-Path',(Join-Path $root 'absent'),'-TimeoutMs','0')},@{stepIndex=1;command='help';arguments=@()}) | ConvertTo-Json -Depth 6 | Set-Content $requests
     $missed=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsPath $requests | ForEach-Object {$_ | ConvertFrom-Json})
     Check ($LASTEXITCODE -eq 1 -and $missed.Count -eq 1 -and $missed[0].ok -and -not $missed[0].data.conditionMet) 'Batch continued after unmet wait or changed CLI dispatch semantics.'
+    Check (-not $missed[0].verification.eligible -and $missed[0].verification.note) 'Command response did not explain receipt ineligibility.'
     $reviewed=@()
     for ($i=1;$i -le 2;$i++) {
         Add-AGTAExplorationCommand $savedRoot $i click @('-Name','Synthetic fixture') @{ok=$true} | Out-Null
         $receipt=Add-AGTAExplorationCommand $savedRoot $i read @('-Name','Synthetic fixture') @{ok=$true;data=@{text='Synthetic fixture'}}
         $reviewed+=@{stepIndex=$i;route='Synthetic fixture route';observedResult='Synthetic fixture';verificationCommandId=$receipt}
     }
+    $windowReceipt=Add-AGTAExplorationCommand $savedRoot 1 windows @('-Name','Synthetic fixture') @{ok=$true;data=@{count=1;windows=@(@{name='Synthetic fixture'})}}
+    $reviewed[0].verificationCommandIds=@($reviewed[0].verificationCommandId,$windowReceipt)
     $reviewed | ConvertTo-Json -Depth 6 | Set-Content $requests
     $recorded=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action RecordSteps -RunRoot $savedRoot -RequestsPath $requests | ForEach-Object {$_ | ConvertFrom-Json})
     Check ($LASTEXITCODE -eq 0 -and $recorded.Count -eq 2 -and $recorded[1].covered -eq 2) 'Reviewed rows were not recorded in one invocation.'
+    $composite=Get-AGTAExplorationStatus $savedRoot
+    Check ($composite.steps[0].verificationCommandIds.Count -eq 2) 'Composite row evidence lost an observation.'
+    Reject { Complete-AGTAExplorationStep $savedRoot 1 'Synthetic route' 'Invalid extra receipt' -VerificationCommandIds @($windowReceipt,'missing') } 'Invalid secondary receipt was ignored.'
+    $compositeDone=Complete-AGTAExploration $savedRoot $csv VisibleControls
+    Check (Test-AGTAExploration $compositeDone.explorationPath $csv VisibleControls).ok 'Composite evidence failed execution validation.'
+    # Continue exercising RecordSteps on a still-open synthetic walkthrough.
+    $compositeManifest=Get-Content $compositeDone.explorationPath -Raw | ConvertFrom-Json
+    $compositeManifest.completed=$false; $compositeManifest.completedAt=$null; $compositeManifest.transcriptHash=$null
+    $compositeManifest | ConvertTo-Json -Depth 16 | Set-Content $compositeDone.explorationPath
     $reviewed[0].observedResult='Observed '+[char]0x151+[char]0x4e2d
     $oldOutputEncoding=$OutputEncoding
     $OutputEncoding=New-Object Text.UTF8Encoding($false)
