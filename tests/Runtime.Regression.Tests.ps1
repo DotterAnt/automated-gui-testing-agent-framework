@@ -55,6 +55,8 @@ try {
     try { Assert-FileWait -Result ([pscustomobject]@{ok=$true;data=@{path=$csv;conditionMet=$false}}) -Message 'Fixture wait failed.' } catch { $fileWaitFailed=$_.Exception.Message -eq 'Fixture wait failed.' }
     Check $fileWaitFailed 'File wait did not infer the path or honor a custom assertion message.'
     Check ($ctx.InteractionPolicy -eq 'GuiNavigation' -and $ctx.RequireAssertions -and $ctx.Transport -eq 'InProcess') 'Defaults are inconsistent.'
+    $focusSummary=New-CommandSummary type @() @{ok=$false;outcome='not-dispatched';error=@{type='InputFocusNotReady';message='Fixture focus mismatch';focus=@{owned=$false;focusHandle=123}}}
+    Check ($focusSummary.errorType -eq 'InputFocusNotReady' -and $focusSummary.inputFocus.focusHandle -eq 123 -and -not $focusSummary.inputFocus.owned -and $focusSummary.outcome -eq 'not-dispatched') 'Compact command summary dropped the actionable focus diagnosis.'
     $help=Invoke-PotatoJson help @('-Topic','type')
     Check ($help.ok -and $ctx.Timing.commandCount -eq 1) 'In-process transport/timing failed.'
     $blocked=Invoke-PotatoJson hotkey @('-Keys','^s')

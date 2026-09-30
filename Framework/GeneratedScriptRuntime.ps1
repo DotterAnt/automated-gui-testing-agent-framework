@@ -220,6 +220,8 @@ function New-CommandSummary {
         interactionPolicy = $Result.interactionPolicy
         logPath = $context.CommandLogPath
         error = $(if ($Result.error) { $Result.error.message } else { $null })
+        errorType = $(if ($Result.error) { $Result.error.type } else { $null })
+        inputFocus = $(if ($Result.error.focus) { $Result.error.focus } elseif ($Result.data.inputFocus) { $Result.data.inputFocus } else { $null })
     }
 }
 

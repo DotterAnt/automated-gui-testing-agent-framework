@@ -21,6 +21,7 @@ try {
     Reject { Complete-AGTAExplorationStep $root 1 'route' 'result' 'fabricated-id' } 'Invented evidence passed.'
     Check (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=1}}}).eligible 'Window observation was rejected as evidence.'
     Check (-not (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=0}}}).eligible) 'Empty window observation was accepted as evidence.'
+    Check (-not (Get-AGTAExplorationVerificationInfo @{command='type';result=@{ok=$true;data=@{typed=$true;inputFocus=@{source='Win32';native=@{ready=$true}}}}}).eligible) 'Native focus readiness was confused with content verification.'
     $plain=Add-AGTAExplorationCommand $root 1 type @('-Text','fixture') @{ok=$true;data=@{typed=$true;verificationPerformed=$false}}
     Reject { Complete-AGTAExplorationStep $root 1 'Typed fixture' 'Unverified text' $plain } 'Unverified typing passed as evidence.'
     $verified=Add-AGTAExplorationCommand $root 1 type @('-Text','fixture','-Verify') @{ok=$true;data=@{typed=$true;verificationPerformed=$true;verified=$true;verification=@{verified=$true;mode='Exact';attempts=1;observedLength=7;readError=$null}}}
