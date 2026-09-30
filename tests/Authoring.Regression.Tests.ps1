@@ -1,0 +1,102 @@
+param()
+$ErrorActionPreference='Stop'
+$frameworkRoot=Split-Path -Parent $PSScriptRoot
+. (Join-Path $frameworkRoot 'Framework\GeneratedScriptRuntime.ps1')
+$root=Join-Path ([IO.Path]::GetTempPath()) ('agta-authoring-'+[guid]::NewGuid())
+New-Item -ItemType Directory $root | Out-Null
+$script:checks=0
+function Check($value,$message) { if (-not $value) { throw $message }; $script:checks++ }
+function Reject([scriptblock]$body,$message) { $caught=$false; try { & $body | Out-Null } catch { $caught=$true }; Check $caught $message }
+try {
+    $csv=Join-Path $root 'case.csv'
+    'Action,Data,Expected Result','Create fixture,,Visible fixture','Reopen fixture,,Persisted fixture' | Set-Content $csv
+    Initialize-AGTAExploration $root $csv GuiNavigation | Out-Null
+    Reject { Complete-AGTAExploration $root $csv GuiNavigation } 'Empty exploration passed.'
+    Reject { Complete-AGTAExplorationStep $root 1 'route' 'result' 'fabricated-id' } 'Invented evidence passed.'
+    for ($i=1;$i -le 2;$i++) {
+        Add-AGTAExplorationCommand $root $i click @('-Name','Fixture') @{ok=$true;interactionPolicy=@{mode='GuiNavigation'}} | Out-Null
+        $miss=Add-AGTAExplorationCommand $root $i wait-element @() @{ok=$true;data=@{exists=$false}}
+        Reject { Complete-AGTAExplorationStep $root $i 'Performed route' 'Not there' $miss } 'Successful dispatch of a failed wait passed.'
+        $id=Add-AGTAExplorationCommand $root $i read @('-Name','Fixture') @{ok=$true;data=@{text='Observed fixture'}}
+        Complete-AGTAExplorationStep $root $i 'Performed visible route' 'Observed fixture' $id | Out-Null
+        if ($i -eq 1) { Reject { Complete-AGTAExploration $root $csv GuiNavigation } 'Partial coverage passed.' }
+    }
+    $completed=Complete-AGTAExploration $root $csv GuiNavigation
+    Check (Test-AGTAExploration $completed.explorationPath $csv GuiNavigation).ok 'Complete exploration failed.'
+    Check (-not (Test-AGTAExploration $completed.explorationPath $csv VisibleControls).ok) 'Policy mismatch passed.'
+    Reject { Add-AGTAExplorationCommand $root 1 click @() @{ok=$true} } 'Completed transcript was silently extended.'
+    $scriptPath=Join-Path $root 'fixture.ps1'
+    'Write-Output "Fixture"' | Set-Content $scriptPath
+    Check (-not (Test-AGTAGeneratedScript $scriptPath -TestCaseCsv $csv).ok) 'Script without exploration passed full preflight.'
+    Check (Test-AGTAGeneratedScript $scriptPath -TestCaseCsv $csv -ExplorationPath $completed.explorationPath).ok 'Evidence-backed harmless script failed preflight.'
+    '{}' | Add-Content (Get-AGTAExplorationPaths $root).transcript
+    Check (-not (Test-AGTAExploration $completed.explorationPath $csv GuiNavigation).ok) 'Altered transcript passed.'
+    foreach ($code in @(
+        'New-Object -ComObject Example.Application',
+        '[Runtime.InteropServices.Marshal]::GetActiveObject("Example.Application")',
+        '[Windows.Forms.SendKeys]::SendWait("text")',
+        'Add-Type -Path "private-input.cs"',
+        '$command.ExecuteNonQuery()',
+        '$child = "$command.ExecuteNonQuery()"',
+        'New-Object System.Drawing.Printing.PrintDocument',
+        '$pdf = "%PDF-1.4"',
+        'Start-Process "expected.document"',
+        'Set-Clipboard "text"'
+    )) {
+        $code | Set-Content $scriptPath
+        Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) "GUI bypass survived: $code"
+    }
+    # Existing testdata and read-only assertions remain legal.
+    'Assert-ExpectedResult -Condition ($text -eq "Test") -Message "Persisted text"' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Read-only content assertion was blocked.'
+    'Invoke-StepCommand -Commands $Commands -Command type -Arguments @("-Text", "INSERT INTO Records VALUES (1)")' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Literal SQL text typed through the GUI was confused with a database mutation.'
+    # The runtime must catch the bypass even if standalone preflight is omitted.
+    $runtime=Join-Path $frameworkRoot 'Framework\GeneratedScriptRuntime.ps1'
+    $cli=Join-Path (Split-Path $frameworkRoot) 'potato-cli\potato.ps1'
+    @'
+param($Runtime,$Cli,$Csv,$Root)
+. $Runtime
+$ctx=Initialize-AGTAGeneratedTest -PotatoCliPath $Cli -TestCaseCsv $Csv -RunRoot $Root
+$app=New-Object -ComObject Example.Application
+'@ | Set-Content $scriptPath
+    $ErrorActionPreference='Continue'
+    $child=& powershell.exe -NoProfile -File $scriptPath -Runtime $runtime -Cli $cli -Csv $csv -Root $root 2>&1
+    $ErrorActionPreference='Stop'
+    Check ($LASTEXITCODE -ne 0 -and ($child -join "`n") -match 'audit failed before desktop use') 'Runtime did not stop the bypass before COM activation.'
+    $batchRoot=Join-Path $root 'batch'
+    Initialize-AGTAExploration $batchRoot $csv GuiNavigation | Out-Null
+    $requests=Join-Path $root 'requests.json'
+    @(@{stepIndex=1;command='help';arguments=@('-Topic','missing')},@{stepIndex=1;command='help';arguments=@('-Topic','type')}) | ConvertTo-Json -Depth 6 | Set-Content $requests
+    $batch=@(& powershell.exe -NoProfile -File (Join-Path $frameworkRoot 'Invoke-Exploration.ps1') -Action Batch -RunRoot $batchRoot -TestCaseCsv $csv -PotatoCliPath $cli -RequestsPath $requests | ForEach-Object { $_ | ConvertFrom-Json })
+    Check ($LASTEXITCODE -eq 1 -and $batch.Count -eq 1 -and $batch[0].explorationCommandId -and -not $batch[0].ok) ('Batch continued after a failed command or lost its receipt: '+($batch | ConvertTo-Json -Depth 5 -Compress))
+    $requestsContent=@(@{stepIndex=1;command='help';arguments=@('-Topic','type')},@{stepIndex=1;command='help';arguments=@('-Topic','press-key')})
+    $requestsContent | ConvertTo-Json -Depth 6 | Set-Content $requests
+    $batch=@(& powershell.exe -NoProfile -File (Join-Path $frameworkRoot 'Invoke-Exploration.ps1') -Action Batch -RunRoot $batchRoot -TestCaseCsv $csv -PotatoCliPath $cli -RequestsPath $requests | ForEach-Object { $_ | ConvertFrom-Json })
+    Check ($LASTEXITCODE -eq 0 -and $batch.Count -eq 2 -and $batch[0].ok -and $batch[1].ok -and $batch[0].explorationCommandId -ne $batch[1].explorationCommandId) 'Known sequential batch failed or reused receipt IDs.'
+    Import-Module (Join-Path $frameworkRoot 'Framework\AutomatedGuiTestingAgentFramework.psm1') -Force
+    $apiRoot=Join-Path $root 'api'
+    $generated=Join-Path $apiRoot 'generated'; New-Item -ItemType Directory $generated -Force | Out-Null
+    $context=[pscustomobject]@{TestCaseCsv=$csv;Steps=@(Import-Csv $csv);InteractionPolicy='GuiNavigation';PotatoCliPath=$cli;Execute=$true;Run=@{runRoot=$apiRoot;logs=(Join-Path $apiRoot 'logs');generated=$generated}}
+    Invoke-AGTAAgentTool set_authoring_stage @{stage='planning';summary='Fixture plan'} $context | Out-Null
+    Invoke-AGTAAgentTool set_authoring_stage @{stage='exploration';summary='Fixture walkthrough'} $context | Out-Null
+    Reject { Invoke-AGTAAgentTool set_authoring_stage @{stage='development_iteration';summary='Too early'} $context } 'API stage advanced without exploration.'
+    for ($i=1;$i -le 2;$i++) {
+        Add-AGTAExplorationCommand $apiRoot $i click @() @{ok=$true} | Out-Null
+        $id=Add-AGTAExplorationCommand $apiRoot $i read @() @{ok=$true;data=@{text='Synthetic observation'}}
+        Invoke-AGTAAgentTool record_exploration_step @{stepIndex=$i;route='Synthetic fixture route';observedResult='Synthetic observation';verificationCommandId=$id} $context | Out-Null
+    }
+    Invoke-AGTAAgentTool set_authoring_stage @{stage='development_iteration';summary='Complete synthetic fixture'} $context | Out-Null
+    $written=Invoke-AGTAAgentTool write_generated_script @{relativePath='fixture.ps1';content='Write-Output "fixture"'} $context
+    Check (Test-Path $written.path) 'API did not write after complete exploration.'
+    Reject { Invoke-AGTAAgentTool finalize @{scriptPath=$written.path;summary='Missing execution'} $context } 'API finalized without a passing execution.'
+    $context | Add-Member LastExecution @{ok=$true;path=$written.path;hash=(Get-FileHash $written.path).Hash}
+    Check (Invoke-AGTAAgentTool finalize @{scriptPath=$written.path;summary='Synthetic execution fixture'} $context).final 'API rejected an unchanged validated artifact.'
+    'Write-Output "changed"' | Set-Content $written.path
+    Reject { Invoke-AGTAAgentTool finalize @{scriptPath=$written.path;summary='Stale validation'} $context } 'API accepted stale execution evidence after a script change.'
+    "Authoring checks: $script:checks passed"
+} finally {
+    $resolved=[IO.Path]::GetFullPath($root)
+    $parent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
+    if ($resolved.StartsWith($parent,[StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolved) -like 'agta-authoring-*') { Remove-Item -LiteralPath $resolved -Recurse -Force }
+}

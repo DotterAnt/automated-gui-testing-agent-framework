@@ -1,10 +1,11 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string] $PotatoCliPath,
     [string] $TestCaseCsv,
     [string] $RunRoot,
     [string] $FrameworkRoot,
-    [ValidateSet('VisibleControls','AllowShortcuts')] [string] $InteractionPolicy = 'VisibleControls',
+    [string] $ExplorationPath,
+    [ValidateSet('VisibleControls','GuiNavigation','AllowShortcuts')] [string] $InteractionPolicy = 'GuiNavigation',
     [string] $PolicyReason,
     [ValidateSet('InProcess','Process')] [string] $Transport = 'InProcess'
 )
@@ -26,9 +27,10 @@ $FrameworkRoot = Split-Path -Parent (Split-Path -Parent $runtimePath)
 . $runtimePath
 
 # Resolve generated helper calls and inputs before any desktop action.
-Assert-AGTAGeneratedScriptPreflight -ScriptPath $PSCommandPath -TestCaseCsv $TestCaseCsv -PotatoCliPath $PotatoCliPath | Out-Null
+if (-not $ExplorationPath) { $ExplorationPath = Join-Path $RunRoot 'logs\exploration.json' }
+Assert-AGTAGeneratedScriptPreflight -ScriptPath $PSCommandPath -TestCaseCsv $TestCaseCsv -PotatoCliPath $PotatoCliPath -ExplorationPath $ExplorationPath -InteractionPolicy $InteractionPolicy | Out-Null
 
-$Context = Initialize-AGTAGeneratedTest -PotatoCliPath $PotatoCliPath -TestCaseCsv $TestCaseCsv -RunRoot $RunRoot -RequireAssertions -InteractionPolicy $InteractionPolicy -PolicyReason $PolicyReason -Transport $Transport
+$Context = Initialize-AGTAGeneratedTest -PotatoCliPath $PotatoCliPath -TestCaseCsv $TestCaseCsv -RunRoot $RunRoot -RequireAssertions -InteractionPolicy $InteractionPolicy -PolicyReason $PolicyReason -Transport $Transport -ExplorationPath $ExplorationPath
 $results = @()
 $cleanup = @()
 

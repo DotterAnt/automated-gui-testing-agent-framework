@@ -1,4 +1,4 @@
-﻿. (Join-Path $PSScriptRoot 'ArtifactAssertions.ps1')
+. (Join-Path $PSScriptRoot 'ArtifactAssertions.ps1')
 . (Join-Path $PSScriptRoot 'GeneratedScriptPreflight.ps1')
 function Initialize-AGTAGeneratedTest {
     [CmdletBinding()]
@@ -15,8 +15,9 @@ function Initialize-AGTAGeneratedTest {
         [string] $ExecutionId = (Get-Date -Format 'yyyyMMdd_HHmmss_ffff'),
 
         [switch] $RequireAssertions = $true,
-        [ValidateSet('VisibleControls','AllowShortcuts')] [string] $InteractionPolicy = 'VisibleControls',
+        [ValidateSet('VisibleControls','GuiNavigation','AllowShortcuts')] [string] $InteractionPolicy = 'GuiNavigation',
         [string] $PolicyReason,
+        [string] $ExplorationPath,
         [ValidateSet('InProcess','Process')] [string] $Transport = 'InProcess'
     )
 
@@ -28,6 +29,17 @@ function Initialize-AGTAGeneratedTest {
     }
 
     if ($InteractionPolicy -eq 'AllowShortcuts' -and [string]::IsNullOrWhiteSpace($PolicyReason)) { throw 'AllowShortcuts requires PolicyReason recording the user/testcase authorization.' }
+    # Recheck the actual calling script so omitting a standalone preflight does
+    # not silently bless direct COM/native-input/data fabrication as compliant.
+    $callerPath=$MyInvocation.ScriptName
+    $scriptAudit=$null
+    if ($callerPath -and (Test-Path -LiteralPath $callerPath -PathType Leaf)) {
+        $scriptAudit=Test-AGTAGeneratedScript -ScriptPath $callerPath -InteractionPolicy $InteractionPolicy -PolicyOnly
+        if (-not $scriptAudit.ok) { throw ('Generated script audit failed before desktop use: '+($scriptAudit.issues -join '; ')) }
+    }
+    if (-not $ExplorationPath) { $ExplorationPath=Join-Path $RunRoot 'logs\exploration.json' }
+    $exploration=Test-AGTAExploration -Path $ExplorationPath -TestCaseCsv $TestCaseCsv -InteractionPolicy $InteractionPolicy
+    if (-not $exploration.ok) { throw ('Complete GUI exploration is required before execution: '+($exploration.issues -join '; ')) }
     $cliModule = $null
     if ($Transport -eq 'InProcess') {
         $modulePath = Join-Path (Split-Path -Parent $PotatoCliPath) 'PoTAToCli\PoTAToCli.psm1'
@@ -71,6 +83,8 @@ function Initialize-AGTAGeneratedTest {
         InteractionPolicy = $InteractionPolicy
         PolicyReason = $PolicyReason
         PolicyCompliant = $true
+        ScriptAudit = $scriptAudit
+        ExplorationPath = $ExplorationPath
         Transport = $Transport
         CliModule = $cliModule
         Timing = [ordered]@{ commandCount=0; wrapperMs=0L; backendMs=0L; waitMs=0L; cleanupMs=0L }
@@ -655,6 +669,7 @@ function Complete-AGTAGeneratedTest {
         executionEvidenceRoot = $context.ExecutionEvidenceRoot
         commandLogPath = $context.CommandLogPath
         cleanup = @($Cleanup)
+        explorationPath = $context.ExplorationPath
     }
     $extraArtifactTable = @{}
     if ($ExtraArtifacts -is [hashtable]) {
@@ -684,7 +699,7 @@ function Complete-AGTAGeneratedTest {
     $ok = ($context.PolicyCompliant -and $coverageOk -and $validStatuses -and $cleanupOk -and $assertionsOk -and $summary.failed -eq 0 -and $summary.skipped -eq 0)
     $final = [ordered]@{
         ok = $ok
-        interactionPolicy = @{ mode=$context.InteractionPolicy; reason=$context.PolicyReason; compliant=$context.PolicyCompliant }
+        interactionPolicy = @{ mode=$context.InteractionPolicy; reason=$context.PolicyReason; compliant=$context.PolicyCompliant; assessment='Recorded CLI policy and static script checks; external activity is not sandboxed.'; scriptAuditPerformed=($null -ne $context.ScriptAudit) }
         transport = $context.Transport
         timing = $context.Timing
         testCase = $context.TestCaseName

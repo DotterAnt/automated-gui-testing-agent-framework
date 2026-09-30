@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $frameworkRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $frameworkRoot 'Framework\GeneratedScriptRuntime.ps1')
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('agta-regression-' + [guid]::NewGuid())
-$cliPath = Join-Path (Split-Path -Parent $frameworkRoot) 'potato_cli\potato.ps1'
+$cliPath = Join-Path (Split-Path -Parent $frameworkRoot) 'potato-cli\potato.ps1'
 $script:checks=0
 function Check($ok,$message) { if (-not $ok) { throw $message }; $script:checks++ }
 function Invoke-EvidenceScreenshot { throw 'Fixture: desktop capture disabled.' }
@@ -11,6 +11,11 @@ New-Item -ItemType Directory $testRoot | Out-Null
 try {
     $csv=Join-Path $testRoot 'case.csv'
     'Action,Data,Expected Result', 'Check fixture,,Fixture verified' | Set-Content $csv
+    Initialize-AGTAExploration $testRoot $csv GuiNavigation | Out-Null
+    Add-AGTAExplorationCommand $testRoot 1 click @() @{ok=$true;interactionPolicy=@{mode='GuiNavigation'}} | Out-Null
+    $receipt=Add-AGTAExplorationCommand $testRoot 1 read @() @{ok=$true;data=@{text='Fixture verified'}}
+    Complete-AGTAExplorationStep $testRoot 1 'Synthetic test fixture route' 'Fixture verified' $receipt | Out-Null
+    Complete-AGTAExploration $testRoot $csv GuiNavigation | Out-Null
     $ctx=Initialize-AGTAGeneratedTest -PotatoCliPath $cliPath -TestCaseCsv $csv -RunRoot $testRoot
     $helper=Get-AGTARuntimeHelp -Name Assert-ArtifactPrefix
     Check ($helper.available -and $helper.sourcePath -like '*ArtifactAssertions.ps1' -and $helper.syntax -match 'ExpectedBytes') 'Imported artifact helper was hidden from runtime help.'
@@ -25,7 +30,7 @@ try {
     $wrong=Join-Path $testRoot 'wrong-helper.ps1'
     'Assert-ArtifactPrefx -Path x -ExpectedBytes ([byte[]]@(1))' | Set-Content $wrong
     $preflight=Test-AGTAGeneratedScript -ScriptPath $wrong -TestCaseCsv $csv -PotatoCliPath $cliPath
-    Check (-not $preflight.ok -and $preflight.issues[0] -match 'unavailable') 'Unknown helper survived preflight.'
+    Check (-not $preflight.ok -and @($preflight.issues | Where-Object { $_ -match 'unavailable' }).Count -eq 1) 'Unknown helper survived preflight.'
     $invalidRaw=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $frameworkRoot 'Test-GeneratedScript.ps1') -ScriptPath $wrong
     $invalidValue=$invalidRaw | ConvertFrom-Json
     Check ($LASTEXITCODE -eq 1 -and -not $invalidValue.ok -and $invalidValue.issues[0] -match 'unavailable') 'Preflight entrypoint did not report an invalid script.'
@@ -42,7 +47,7 @@ try {
     $fileWaitFailed=$false
     try { Assert-FileWait -Result ([pscustomobject]@{ok=$true;data=@{path=$csv;conditionMet=$false}}) -Message 'Fixture wait failed.' } catch { $fileWaitFailed=$_.Exception.Message -eq 'Fixture wait failed.' }
     Check $fileWaitFailed 'File wait did not infer the path or honor a custom assertion message.'
-    Check ($ctx.InteractionPolicy -eq 'VisibleControls' -and $ctx.RequireAssertions -and $ctx.Transport -eq 'InProcess') 'Defaults are inconsistent.'
+    Check ($ctx.InteractionPolicy -eq 'GuiNavigation' -and $ctx.RequireAssertions -and $ctx.Transport -eq 'InProcess') 'Defaults are inconsistent.'
     $help=Invoke-PotatoJson help @('-Topic','type')
     Check ($help.ok -and $ctx.Timing.commandCount -eq 1) 'In-process transport/timing failed.'
     $blocked=Invoke-PotatoJson hotkey @('-Keys','^s')

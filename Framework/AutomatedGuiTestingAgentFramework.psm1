@@ -1,5 +1,6 @@
-﻿$script:ModuleRoot = Split-Path -Parent $PSCommandPath
+$script:ModuleRoot = Split-Path -Parent $PSCommandPath
 $script:FrameworkRoot = Split-Path -Parent $script:ModuleRoot
+. (Join-Path $PSScriptRoot 'Exploration.ps1')
 
 function Get-AGTAFrameworkRoot {
     [CmdletBinding()]
@@ -12,7 +13,8 @@ function Resolve-AGTADefaultPotatoCliPath {
     [CmdletBinding()]
     param()
 
-    $candidate = Join-Path -Path (Split-Path -Parent $script:FrameworkRoot) -ChildPath 'potato_cli\potato.ps1'
+    $candidate = Join-Path -Path (Split-Path -Parent $script:FrameworkRoot) -ChildPath 'potato-cli\potato.ps1'
+    if (-not (Test-Path $candidate)) { $candidate = Join-Path (Split-Path -Parent $script:FrameworkRoot) 'potato_cli\potato.ps1' }
     return $candidate
 }
 
@@ -286,6 +288,12 @@ function Set-AGTAAuthoringStage {
     }
 
     $previousStage = [string]$Context.CurrentStage
+    if ($Stage -eq 'exploration' -and -not (Test-Path (Get-AGTAExplorationPaths $Context.Run.runRoot).manifest)) {
+        Initialize-AGTAExploration $Context.Run.runRoot $Context.TestCaseCsv $Context.InteractionPolicy | Out-Null
+    }
+    if ($Stage -eq 'development_iteration') {
+        Complete-AGTAExploration $Context.Run.runRoot $Context.TestCaseCsv $Context.InteractionPolicy | Out-Null
+    }
     $detailText = @($Details | ForEach-Object { [string]$_ })
     $record = [pscustomobject][ordered]@{
         timestamp = (Get-Date).ToString('o')
@@ -346,7 +354,7 @@ function Invoke-AGTAPotatoJson {
 
         [Parameter(Mandatory)]
         [string] $RunRoot,
-        [ValidateSet('VisibleControls','AllowShortcuts')] [string] $InteractionPolicy = 'VisibleControls'
+        [ValidateSet('VisibleControls','GuiNavigation','AllowShortcuts')] [string] $InteractionPolicy = 'GuiNavigation'
     )
 
     if (-not (Test-Path -LiteralPath $PotatoCliPath)) {
@@ -355,6 +363,7 @@ function Invoke-AGTAPotatoJson {
 
     $logPath = Join-Path -Path $RunRoot -ChildPath 'logs\potato-commands.jsonl'
     if (@($Arguments | Where-Object { $_ -match '^--?InteractionPolicy(?:=|$)' }).Count) { throw 'Command policy overrides are forbidden.' }
+    if ($Command -eq 'start') { $Arguments = @($Arguments) + @('-RequireNewProcess','true') }
     $Arguments = @($Arguments) + @('-InteractionPolicy', $InteractionPolicy)
     $processArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PotatoCliPath, $Command) + $Arguments
     $startedAt = Get-Date
@@ -453,7 +462,7 @@ function Test-AGTAGeneratedResult {
     }
 
     if ($Result.ok -isnot [bool]) { return $false }
-    if ($Result.interactionPolicy.mode -notin @('VisibleControls','AllowShortcuts')) { return $false }
+    if ($Result.interactionPolicy.mode -notin @('VisibleControls','GuiNavigation','AllowShortcuts')) { return $false }
     if ($Result.ok -and $Result.interactionPolicy.compliant -ne $true) { return $false }
     $steps = @($Result.steps)
     if ($steps.Count -eq 0) { return $false }
@@ -496,7 +505,7 @@ function Get-AGTASystemPrompt {
 function Assert-AGTAAuthoredScriptPreflight {
     param([string] $ScriptPath, [object] $Context)
     . (Join-Path $script:FrameworkRoot 'Framework\GeneratedScriptRuntime.ps1')
-    Assert-AGTAGeneratedScriptPreflight -ScriptPath $ScriptPath -TestCaseCsv $Context.TestCaseCsv -PotatoCliPath $Context.PotatoCliPath | Out-Null
+    Assert-AGTAGeneratedScriptPreflight -ScriptPath $ScriptPath -TestCaseCsv $Context.TestCaseCsv -PotatoCliPath $Context.PotatoCliPath -ExplorationPath (Get-AGTAExplorationPaths $Context.Run.runRoot).manifest -InteractionPolicy $Context.InteractionPolicy | Out-Null
 }
 
 function Get-AGTAUserPrompt {
@@ -519,7 +528,7 @@ Required stage sequence:
 2. Call set_authoring_stage with stage "exploration", then use PoTATo to explore and manually perform the required GUI actions.
 3. Call set_authoring_stage with stage "development_iteration", then write, validate, fix, and optimize the generated script.
 
-VisibleControls is the default: no hotkeys, dialog Enter, Shortcut clearing, clipboard, or file-association opening. Apply the declared run policy equally to exploration and execution.
+GuiNavigation is the default: visible GUI routes, bounded press-key navigation, and audited focused literal typing. Application shortcuts, clipboard, object models, direct expected-output creation, and file-association opening remain forbidden. Preserve an explicitly requested VisibleControls policy, which forbids press-key too. Apply the same policy to exploration and execution.
 
 The generated script must include end-of-run cleanup. It should register opened processes and created external paths with the shared runtime, close applications/windows it opened, delete fixed-path or external files/state it created that could affect a future run, preserve intentional evidence under the run folder, and record cleanup actions/errors in the final JSON.
 
@@ -565,9 +574,17 @@ function Get-AGTAOpenAITools {
                 properties = @{
                     command = @{ type = 'string' }
                     arguments = @{ type = 'array'; items = @{ type = 'string' } }
+                    stepIndex = @{ type = 'integer'; description = 'Required during exploration: CSV row performed by this command.' }
                 }
                 additionalProperties = $false
             }
+        },
+        @{
+            type = 'function'
+            name = 'record_exploration_step'
+            description = 'Record a completed CSV row after performing its GUI route and observing its expected result. All rows are required before development.'
+            parameters = @{ type='object'; required=@('stepIndex','route','observedResult','verificationCommandId'); additionalProperties=$false;
+                properties=@{stepIndex=@{type='integer'};route=@{type='string'};observedResult=@{type='string'};verificationCommandId=@{type='string'}} }
         },
         @{
             type = 'function'
@@ -614,10 +631,10 @@ function Get-AGTAOpenAITools {
             description = 'Finalize authoring with a summary and generated script path.'
             parameters = @{
                 type = 'object'
-                required = @('summary')
+                required = @('summary','scriptPath')
                 properties = @{
                     summary = @{ type = 'string' }
-                    scriptPath = @{ type = 'string' }
+                    scriptPath = @{ type = 'string'; description = 'Generated script path, relative to the generated folder or its full path.' }
                 }
                 additionalProperties = $false
             }
@@ -676,11 +693,21 @@ function Invoke-AGTAAgentTool {
         'run_potato' {
             $command = [string]$Arguments.command
             if ($command -ne 'help') { Assert-AGTAAuthoringStage -Context $Context -AllowedStages @('exploration', 'development_iteration') -ToolName $Name }
-            $allowed = @('help','state','windows','start','focus','observe','select','click','click-coordinate','type','hotkey','drag','hover','wait-element','wait-file','read','screenshot','close-window','report')
+            $allowed = @('help','state','windows','start','focus','observe','select','click','click-coordinate','type','hotkey','press-key','drag','hover','wait-element','wait-file','read','read-pdf','screenshot','close-window','report')
             if ($command -notin $allowed) { throw "PoTATo command is not allowed: $command" }
             $args = @()
             if ($Arguments.arguments) { $args = @($Arguments.arguments | ForEach-Object { [string]$_ }) }
-            return Invoke-AGTAPotatoJson -PotatoCliPath $Context.PotatoCliPath -Command $command -Arguments $args -RunRoot $Context.Run.runRoot -InteractionPolicy $Context.InteractionPolicy
+            if ($Context.CurrentStage -eq 'exploration' -and $command -ne 'help' -and ($Arguments.stepIndex -lt 1 -or $Arguments.stepIndex -gt $Context.Steps.Count)) { throw 'Exploration requires stepIndex before dispatch.' }
+            $result=Invoke-AGTAPotatoJson -PotatoCliPath $Context.PotatoCliPath -Command $command -Arguments $args -RunRoot $Context.Run.runRoot -InteractionPolicy $Context.InteractionPolicy
+            if ($Context.CurrentStage -eq 'exploration' -and $command -ne 'help') {
+                $id=Add-AGTAExplorationCommand $Context.Run.runRoot $Arguments.stepIndex $command $args $result
+                $result | Add-Member -NotePropertyName explorationCommandId -NotePropertyValue $id -Force
+            }
+            return $result
+        }
+        'record_exploration_step' {
+            Assert-AGTAAuthoringStage -Context $Context -AllowedStages @('exploration') -ToolName $Name
+            return Complete-AGTAExplorationStep $Context.Run.runRoot $Arguments.stepIndex $Arguments.route $Arguments.observedResult $Arguments.verificationCommandId
         }
         'write_generated_script' {
             Assert-AGTAAuthoringStage -Context $Context -AllowedStages @('development_iteration') -ToolName $Name
@@ -692,7 +719,7 @@ function Invoke-AGTAAgentTool {
             if (-not (Test-Path -LiteralPath $parent)) { New-Item -Path $parent -ItemType Directory -Force | Out-Null }
             Set-Content -LiteralPath $path -Value ([string]$Arguments.content) -Encoding UTF8
             Assert-AGTAAuthoredScriptPreflight -ScriptPath $path -Context $Context
-            return @{ path = $path; length = ([string]$Arguments.content).Length }
+            return @{ path = $path; relativePath=[string]$Arguments.relativePath; length = ([string]$Arguments.content).Length }
         }
         'run_generated_script' {
             Assert-AGTAAuthoringStage -Context $Context -AllowedStages @('development_iteration') -ToolName $Name
@@ -717,6 +744,7 @@ function Invoke-AGTAAgentTool {
                 $generatedOk = ($proc.exitCode -eq 0 -and (Test-AGTAGeneratedResult -Result $generatedParsed -ExpectedSteps $Context.Steps) -and [bool]$generatedParsed.ok -and $generatedParsed.interactionPolicy.mode -eq $Context.InteractionPolicy)
             }
             catch {}
+            $Context | Add-Member -NotePropertyName LastExecution -NotePropertyValue @{ok=$generatedOk;path=$path;hash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash} -Force
             Write-AGTAMetric -RunRoot $Context.Run.runRoot -Metric ([ordered]@{
                 timestamp = (Get-Date).ToString('o')
                 event = 'generated_script_run'
@@ -744,6 +772,16 @@ function Invoke-AGTAAgentTool {
             $missingStages = @('planning', 'exploration', 'development_iteration') | Where-Object { $seenStages -notcontains $_ }
             if ($missingStages.Count -gt 0) {
                 throw "Cannot finalize before all authoring stages are recorded. Missing: $($missingStages -join ', ')"
+            }
+            $requestedPath=[string]$Arguments.scriptPath
+            if ([IO.Path]::IsPathRooted($requestedPath)) {
+                $prefix=[IO.Path]::GetFullPath($Context.Run.generated).TrimEnd('\')+'\'
+                $finalPath=[IO.Path]::GetFullPath($requestedPath)
+                if (-not $finalPath.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { throw 'Final script must be inside the run generated folder.' }
+            } else { $finalPath=Assert-AGTASafeRelativePath -Root $Context.Run.generated -RelativePath $requestedPath }
+            Assert-AGTAAuthoredScriptPreflight -ScriptPath $finalPath -Context $Context
+            if ($Context.Execute -and (-not $Context.LastExecution.ok -or $Context.LastExecution.path -ne $finalPath -or $Context.LastExecution.hash -ne (Get-FileHash -LiteralPath $finalPath -Algorithm SHA256).Hash)) {
+                throw 'Cannot finalize: the current generated script has not passed a complete execution. Report the blocker; do not claim PASS from an older revision.'
             }
             return @{ final = $true; summary = [string]$Arguments.summary; scriptPath = [string]$Arguments.scriptPath }
         }
@@ -935,25 +973,13 @@ function Invoke-AGTAMockAuthoring {
     [void](Set-AGTAAuthoringStage -Context $Context -Stage 'exploration' -Summary 'Mock provider does not perform live UI exploration.' -Details @(
         'This dry-run path records the stage boundary without touching the desktop.'
     ))
-    [void](Set-AGTAAuthoringStage -Context $Context -Stage 'development_iteration' -Summary 'Mock provider writes a generic template; it does not implement GUI coverage.')
-    $toolResult = Invoke-AGTAAgentTool -Name 'write_generated_script' -Arguments ([pscustomobject]@{
-        relativePath = 'Test.Generated.ps1'
-        content = $scriptText
-    }) -Context $Context
-
-    $execution = $null
-    if ($Context.Execute) {
-        $execution = Invoke-AGTAAgentTool -Name 'run_generated_script' -Arguments ([pscustomobject]@{
-            relativePath = 'Test.Generated.ps1'
-        }) -Context $Context
-    }
-
     return [pscustomobject][ordered]@{
         provider = 'Mock'
-        scriptPath = $toolResult.path
-        execution = $execution
+        incomplete = $true
+        scriptPath = $null
+        execution = $null
         run = $Context.Run
-        summary = 'Mock provider wrote the generic template. Placeholder steps remain SKIPPED.'
+        summary = 'Mock provider cannot complete GUI exploration. No script was generated or executed; coverage remains incomplete.'
     }
 }
 
@@ -977,7 +1003,7 @@ function Invoke-AGTAAgentAuthoring {
         [string] $SystemPrompt,
 
         [string] $UserPrompt,
-        [ValidateSet('VisibleControls','AllowShortcuts')] [string] $InteractionPolicy = 'VisibleControls',
+        [ValidateSet('VisibleControls','GuiNavigation','AllowShortcuts')] [string] $InteractionPolicy = 'GuiNavigation',
         [string] $PolicyReason
     )
 
@@ -1033,7 +1059,7 @@ function Invoke-AGTAAgentAuthoring {
             event = 'authoring_end'
             provider = $Provider
             model = $Model
-            ok = (-not $authoringError)
+            ok = (-not $authoringError -and -not $result.incomplete)
             durationMs = [int]($authoringFinishedAt - $authoringStartedAt).TotalMilliseconds
             resultType = $(if ($result) { $result.GetType().FullName } else { $null })
             error = $authoringError
@@ -1043,7 +1069,7 @@ function Invoke-AGTAAgentAuthoring {
     $resultPath = Join-Path -Path $run.results -ChildPath 'authoring-result.json'
     $result | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath $resultPath -Encoding UTF8
     return [pscustomobject][ordered]@{
-        ok = $true
+        ok = (-not $result.incomplete)
         provider = $Provider
         model = $Model
         runRoot = $run.runRoot
@@ -1065,3 +1091,4 @@ Export-ModuleMember -Function `
     Invoke-AGTAAgentAuthoring, `
     Invoke-AGTAAgentTool, `
     Get-AGTAOpenAITools
+Export-ModuleMember -Function Get-AGTAExplorationPaths, Initialize-AGTAExploration, Add-AGTAExplorationCommand, Complete-AGTAExplorationStep, Complete-AGTAExploration, Test-AGTAExploration

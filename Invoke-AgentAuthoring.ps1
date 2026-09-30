@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory)]
     [string] $TestCaseCsv,
@@ -21,7 +21,7 @@ param(
     [string] $UserPrompt = '',
 
     [string] $UserPromptPath = '',
-    [ValidateSet('VisibleControls','AllowShortcuts')] [string] $InteractionPolicy = 'VisibleControls',
+    [ValidateSet('VisibleControls','GuiNavigation','AllowShortcuts')] [string] $InteractionPolicy = 'GuiNavigation',
     [string] $PolicyReason
 )
 
@@ -32,7 +32,7 @@ try {
     Import-Module $modulePath -Force
 
     if (-not $PotatoCliPath) {
-        $PotatoCliPath = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'potato_cli\potato.ps1'
+        $PotatoCliPath = Resolve-AGTADefaultPotatoCliPath
     }
 
     if ($SystemPromptPath) {
@@ -60,6 +60,7 @@ try {
     $result = Invoke-AGTAAgentAuthoring @arguments
 
     $result | ConvertTo-Json -Depth 80 -Compress
+    if (-not $result.ok) { exit 1 }
 }
 catch {
     [pscustomobject][ordered]@{

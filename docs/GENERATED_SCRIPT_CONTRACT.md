@@ -1,6 +1,6 @@
 # Generated Script Contract
 
-Start with `AUTHORING.md` and the template. VisibleControls is the default; no hotkey/Shortcut fallback is authorized by a selector failure. AllowShortcuts requires an explicit user/testcase allowance, a run PolicyReason, and per-command FallbackReason/FallbackEvidence.
+Start with `AUTHORING.md` and the template. GuiNavigation is the default; preserve an explicitly requested VisibleControls policy. Navigation and focused opaque input require per-command reason/evidence. Application hotkeys/Shortcut clearing require explicit AllowShortcuts authorization. A selector failure never authorizes a non-GUI route.
 
 Generated testcase scripts must follow this contract so different agents and API providers produce comparable artifacts.
 
@@ -57,7 +57,7 @@ Files created only as evidence should stay under `RunRoot`. Files or application
 
 ## PoTATo Invocation
 
-The script must call `potato_cli\potato.ps1` through the shared runtime helper:
+The script must call `potato-cli\potato.ps1` through the shared runtime helper:
 
 ```powershell
 Invoke-PotatoJson -Command "observe" -Arguments @("-Depth", "2")
@@ -74,7 +74,7 @@ Each generated script run must create an `executionId` and a dedicated `commandL
 
 The final result JSON should keep command entries compact. A step `commands` item should contain fields like `index`, `command`, `arguments`, `ok`, `durationMs`, `logPath`, and `error`, not the full raw PoTATo response or full UI tree. The full parsed response belongs in the JSONL command log. `Invoke-StepCommand` and `Complete-AGTAGeneratedTest` already implement this shape.
 
-VisibleControls is enforced by default. Hotkeys, including Enter confirmations, and Shortcut clearing are rejected. AllowShortcuts requires explicit user/testcase authorization at initialization and per-action fallback reason/evidence; unreliable UIA or recovery is not permission.
+GuiNavigation is enforced by default. `press-key` permits bounded Tab/ShiftTab/Enter/Escape/arrows with observed reason/evidence and checked application focus. Explicit VisibleControls rejects navigation too. Application hotkeys and Shortcut clearing require authorized AllowShortcuts; unreliable UIA or recovery is not permission. `type -TargetMode Focused` handles an observed opaque editor without compiling a private input backend.
 
 Generated scripts should be optimized after they are functionally correct. Use specific waits instead of arbitrary sleeps, keep selectors as narrow as the application allows, avoid redundant `observe` or screenshot calls that are not used for evidence/debugging, and make expected dialogs/modals explicit instead of relying on timing.
 
@@ -177,6 +177,6 @@ Use `Read-AGTAArtifactBytes` / `Assert-ArtifactPrefix` for bounded shared reads 
 
 `GeneratedScriptRuntime.ps1` dot-sources `ArtifactAssertions.ps1` and `GeneratedScriptPreflight.ps1`. Call `Get-AGTARuntimeHelp -Name <helper>` to inspect loaded helpers instead of searching a single source file. The template calls `Assert-AGTAGeneratedScriptPreflight` before initialization; it checks parsing, called command names/parameters, and supplied CLI/CSV paths without driving the desktop. The API authoring tools also apply this check when writing and running a generated script.
 
-For shell exploration, `Get-RuntimeHelp.ps1 -Name <helper>` returns full JSON help, and `Test-GeneratedScript.ps1 -ScriptPath <file> -TestCaseCsv <csv> -PotatoCliPath <cli>` returns a JSON preflight result and exits nonzero on issues. These entrypoints avoid nested `powershell -Command` quoting. `Invoke-StepClick` records and asserts a click, defaulting to `-Method Auto`. `Assert-FileWait` accepts `-Message` and infers the path from the wait result if `-Path` is omitted.
+For shell authoring, `Get-RuntimeHelp.ps1 -Name <helper>` returns full JSON help. `Invoke-Exploration.ps1` records a full GUI walkthrough, including observation receipts for every CSV row. `Test-GeneratedScript.ps1 -ScriptPath <file> -TestCaseCsv <csv> -PotatoCliPath <cli> -ExplorationPath <manifest>` validates it before execution. Runtime initialization defaults ExplorationPath to RunRoot/logs/exploration.json, or accepts an explicit manifest from the walkthrough run. CSV hash, policy, coverage, and transcript hash must match. The runtime also audits its calling script so omitting standalone preflight cannot bless the observed direct COM/native-input/data-fabrication patterns. These are audit checks, not a sandbox or proof of semantic correctness. `Invoke-StepClick` defaults to Auto. `Assert-FileWait` accepts Message and infers the path from the wait result.
 
 `type -Verify` polls until `-VerifyTimeoutMs` (default 3000 ms) or a supplied positive `-MaxAttempts` limit. It never retypes. `-VerifyMode Exact|Contains|NormalizedExact|NormalizedContains` controls comparison; normalized modes reconcile line endings. `-TimeoutMs` is the selector lookup deadline. On failure the CLI reports attempt count and observed length without embedding field contents.

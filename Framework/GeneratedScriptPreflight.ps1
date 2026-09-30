@@ -1,3 +1,5 @@
+. (Join-Path $PSScriptRoot 'Exploration.ps1')
+
 function Get-AGTARuntimeHelp {
     [CmdletBinding()]
     param([string] $Name)
@@ -29,7 +31,10 @@ function Test-AGTAGeneratedScript {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string] $ScriptPath,
           [string] $TestCaseCsv,
-          [string] $PotatoCliPath)
+          [string] $PotatoCliPath,
+          [string] $ExplorationPath,
+          [string] $InteractionPolicy = 'GuiNavigation',
+          [switch] $PolicyOnly)
     $issues = @()
     if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
         return [pscustomobject]@{ok=$false;issues=@("Script not found: $ScriptPath");checkedCommands=0}
@@ -54,6 +59,10 @@ function Test-AGTAGeneratedScript {
             catch { $issues += "Testcase CSV cannot be read: $($_.Exception.Message)" }
         }
     }
+    if ($TestCaseCsv -and (Split-Path -Leaf $ScriptPath) -ne 'GeneratedScript.Template.ps1') {
+        $exploration=Test-AGTAExploration -Path $ExplorationPath -TestCaseCsv $TestCaseCsv -InteractionPolicy $InteractionPolicy
+        $issues += @($exploration.issues)
+    }
     $localFunctions = @{}
     foreach ($definition in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst]}, $true))) {
         $localFunctions[$definition.Name] = $true
@@ -61,6 +70,20 @@ function Test-AGTAGeneratedScript {
     $checked = 0
     foreach ($call in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst]}, $true))) {
         $name = $call.GetCommandName()
+        if ($name -match '^(?:New-Object)$' -and $call.Extent.Text -match '(?i)-ComObject\b') {
+            $issues += "Line $($call.Extent.StartLineNumber): application COM automation bypasses the required GUI route. Use recorded CLI actions."
+        }
+        if ($name -eq 'New-Object' -and $call.Extent.Text -match '(?i)System\.Drawing\.Printing\.PrintDocument') {
+            $issues += "Line $($call.Extent.StartLineNumber): printing a synthetic document bypasses the target application's print route. Print the actual document through its GUI."
+        }
+        if ($name -in @('Set-Clipboard','Get-Clipboard','Invoke-Expression','iex')) {
+            $issues += "Line $($call.Extent.StartLineNumber): '$name' bypasses the recorded GUI workflow."
+        }
+        if ($name -eq 'Add-Type' -and $call.Extent.Text -match '(?i)-(TypeDefinition|MemberDefinition|Path)\b') {
+            $issues += "Line $($call.Extent.StartLineNumber): generated scripts must not compile/load private input backends. Use type, press-key, or relative click through the CLI."
+        }
+        if ($name -eq 'Start-Process') { $issues += "Line $($call.Extent.StartLineNumber): use recorded CLI start for executable launches and the GUI Open route for documents; direct Start-Process bypasses ownership and route checks." }
+        if ($PolicyOnly) { continue }
         if (-not $name -or $localFunctions.ContainsKey($name)) { continue }
         $checked++
         $command = Get-Command -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -76,20 +99,32 @@ function Test-AGTAGeneratedScript {
         }
     }
     foreach ($memberCall in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst]}, $true))) {
+        if ($memberCall.Member.Extent.Text -match '^(?i:SendWait|SendText|SendInput|mouse_event|SetCursorPos|GetActiveObject|GetTypeFromProgID|CreateInstance|ExecuteNonQuery|SetValue)$') {
+            $issues += "Line $($memberCall.Extent.StartLineNumber): direct '$($memberCall.Member.Extent.Text)' can bypass GUI input or create expected data. Use the CLI for actions and read-only artifact checks for verification."
+        }
         if ($memberCall.Static -and $memberCall.Member.Extent.Text -eq 'ReadAllBytes' -and
             $memberCall.Expression.Extent.Text -match '^\[(?:System\.)?IO\.File\]$') {
             $issues += "Line $($memberCall.Extent.StartLineNumber): direct File.ReadAllBytes can fail on an output still held by its application. Use Read-AGTAArtifactBytes or Assert-ArtifactPrefix for bounded shared reads."
         }
     }
-    return [pscustomobject]@{ok=($issues.Count -eq 0);issues=@($issues);checkedCommands=$checked}
+    # Literal embedded scripts were the observed OLE DB/PDF-fabrication escape.
+    # Inspect code strings as well as PowerShell calls, without executing them.
+    foreach ($literal in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst] -or $node -is [Management.Automation.Language.ExpandableStringExpressionAst]}, $true))) {
+        if ($literal.Value -match '(?i)\bExecuteNonQuery\s*\(|\b(?:SendInput|SendWait|GetActiveObject|GetTypeFromProgID)\s*\(|New-Object\s+-ComObject\b|System\.Drawing\.Printing\.PrintDocument|\b(?:reportlab|fpdf)\b|%PDF-\d') {
+            $issues += "Line $($literal.Extent.StartLineNumber): embedded mutation/input/artifact-generation code requires removal; expected outputs must be produced through the tested GUI."
+        }
+    }
+    return [pscustomobject]@{ok=($issues.Count -eq 0);issues=@($issues | Select-Object -Unique);checkedCommands=$checked;policyAssessment='Static checks and recorded CLI actions; not an execution sandbox.'}
 }
 
 function Assert-AGTAGeneratedScriptPreflight {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string] $ScriptPath,
           [string] $TestCaseCsv,
-          [string] $PotatoCliPath)
-    $result = Test-AGTAGeneratedScript -ScriptPath $ScriptPath -TestCaseCsv $TestCaseCsv -PotatoCliPath $PotatoCliPath
+          [string] $PotatoCliPath,
+          [string] $ExplorationPath,
+          [string] $InteractionPolicy = 'GuiNavigation')
+    $result = Test-AGTAGeneratedScript -ScriptPath $ScriptPath -TestCaseCsv $TestCaseCsv -PotatoCliPath $PotatoCliPath -ExplorationPath $ExplorationPath -InteractionPolicy $InteractionPolicy
     if (-not $result.ok) { throw ('Generated script preflight failed: ' + ($result.issues -join '; ')) }
     return $result
 }

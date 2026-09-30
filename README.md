@@ -2,7 +2,7 @@
 
 For CSV authoring, start with `docs/AUTHORING.md` and the generated template. The contract and source modules are references for specific unresolved questions.
 
-PowerShell-only framework for turning CSV testcase descriptions into repeatable GUI automation scripts that use `potato_cli`.
+PowerShell-only framework for turning CSV testcase descriptions into repeatable GUI automation scripts that use `potato-cli`.
 
 [Watch the PoTATo demo recording](https://github.com/DottedAnt-Dooz/automated-gui-testing-agent-framework/releases/download/demo-v1/demo.mkv)
 
@@ -48,7 +48,7 @@ The OpenAI provider reads `OPENAI_API_KEY` from the environment and uses the Res
 
 The API workflow exposes a `set_authoring_stage` tool. The model must enter `planning`, then `exploration`, then `development_iteration`. PoTATo exploration commands are blocked until the exploration stage is active, and generated-script writing/running is blocked until development/iteration is active.
 
-Both workflows default to enforced VisibleControls. Hotkeys and Shortcut clearing require an explicitly authorized AllowShortcuts run and recorded fallback evidence; recovery is not an automatic exception.
+Both workflows default to GuiNavigation: visible GUI routes with audited, bounded navigation keys and focused literal input. An explicitly requested VisibleControls policy remains strict. Application hotkeys and Shortcut clearing require authorized AllowShortcuts; recovery never authorizes a GUI bypass. A completed, evidence-backed exploration of every CSV row is required before generation and execution. See `Invoke-Exploration.ps1` and `docs/AUTHORING.md`.
 
 Generated scripts must also clean up after themselves before exiting. They should preserve run-folder evidence, but close any applications they opened and delete fixed-path or external files/state they created that could make a later run fail or take a different path.
 
@@ -104,7 +104,7 @@ New-AGTARunDirectory -TestCaseCsv ".\Microsoft Paint.csv"
 Invoke PoTATo safely:
 
 ```powershell
-Invoke-AGTAPotatoJson -PotatoCliPath "..\potato_cli\potato.ps1" -Command "state" -RunRoot ".\runs\manual"
+Invoke-AGTAPotatoJson -PotatoCliPath "..\potato-cli\potato.ps1" -Command "state" -RunRoot ".\runs\manual"
 ```
 
 Build the analysis dashboard:
@@ -122,4 +122,4 @@ v1 assumes the VM is already logged into an interactive desktop. It does not res
 
 ## Policy and execution changes
 
-Start with `docs/AUTHORING.md`. VisibleControls is enforced by default, including exploration; shortcut exceptions require explicit authorization and evidence. InProcess execution reuses the CLI module while Process remains available for comparisons. Generated scripts must emit JSON and exit with `Get-AGTATestExitCode`. Runtime `start` automatically registers its owned process for scoped cleanup. The historical shortcut-based Paint example has been retired; Mock now emits a generic template with SKIPPED placeholders and cannot claim GUI coverage.
+Start with `docs/AUTHORING.md`. Complete the full GUI walkthrough and its exploration manifest, then generate from the shared template. InProcess execution reuses the CLI module while Process remains available for controlled comparisons. Generated scripts emit JSON and exit with `Get-AGTATestExitCode`. Runtime start registers its owned process for cleanup. Static checks reject observed COM/native-input/data-fabrication bypasses, but are not a sandbox. Mock reports incomplete exploration and cannot generate, execute, or claim GUI coverage.
