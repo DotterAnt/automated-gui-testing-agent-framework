@@ -366,7 +366,6 @@ function Invoke-AGTAPotatoJson {
     $logPath = Join-Path -Path $RunRoot -ChildPath 'logs\potato-commands.jsonl'
     $Arguments=@(Resolve-AGTACommandArguments $Command $Arguments)
     if (@($Arguments | Where-Object { $_ -match '^--?InteractionPolicy(?:=|$)' }).Count) { throw 'Command policy overrides are forbidden.' }
-    if ($Command -eq 'start') { $Arguments = @($Arguments) + @('-RequireNewProcess','true') }
     $Arguments = @($Arguments) + @('-InteractionPolicy', $InteractionPolicy)
     $processArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PotatoCliPath, $Command) + $Arguments
     $startedAt = Get-Date
@@ -531,7 +530,8 @@ Required stage sequence:
 2. Call set_authoring_stage with stage "exploration", then use PoTATo to explore and manually perform the required GUI actions.
 3. Call set_authoring_stage with stage "development_iteration", then write, validate, fix, and optimize the generated script.
 
-GuiNavigation is the default: visible GUI routes, bounded press-key navigation, and audited focused literal typing. Application shortcuts, clipboard, object models, direct expected-output creation, and file-association opening remain forbidden. Preserve an explicitly requested VisibleControls policy, which forbids press-key too. Apply the same policy to exploration and execution.
+GuiNavigation is the default: visible GUI routes, file-manager address bars and Open/Open with/double-click, bounded press-key navigation, and audited focused literal typing. Application shortcuts, clipboard, object models, direct expected-output creation, and non-GUI shell/protocol launch wrappers remain forbidden. Preserve an explicitly requested VisibleControls policy. Apply the same policy to exploration and execution.
+Start defaults to RequireNewWindow, allowing shared shell/application processes while owning only a new window there. Reuse test windows with focus instead of relaunching. Before a GUI cross-app opening, windows -Checkpoint records a baseline; focus -SinceCheckpoint <checkpointId> registers only the observed new window for cleanup. Plain focus changes the interaction target without owning its host. windows -Foreground returns the actual dialog identity for guarded Scope ForegroundWindow observation/click/type/press-key. External focused typing requires ExpectedFocusJson. PathKind enables readback by default; standard Windows Edit fields support readback and PreDelete even when UIA patterns are missing. Preserve absolute paths and tested pacing. Never replace these routes with launcher wrappers or broad process termination.
 
 The generated script must include end-of-run cleanup. It should register opened processes and created external paths with the shared runtime, close applications/windows it opened, delete fixed-path or external files/state it created that could affect a future run, preserve intentional evidence under the run folder, and record cleanup actions/errors in the final JSON.
 

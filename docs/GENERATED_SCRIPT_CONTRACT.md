@@ -83,11 +83,11 @@ Generated scripts should be optimized after they are functionally correct. Use s
 
 Optimization must not remove required evidence or make failures harder to diagnose.
 
-User/testcase interaction constraints override every fallback preference. A forbidden shortcut/clipboard operation is still forbidden inside a helper. Do not replace a required GUI route with process arguments, file association, an object model, or directly generated expected output. Record unavailable coverage as incomplete.
+User/testcase interaction constraints override every fallback preference. A forbidden shortcut/clipboard operation is still forbidden inside a helper. Do not replace a required GUI route with document-loading process arguments, non-GUI file association, an object model, or directly generated expected output. Record unavailable coverage as incomplete.
 
 Start with CLI `help -Topic <command>` and the template. Keep desktop commands sequential. Use targeted queries before repeating broad `observe` calls. `select` queries elements; it does not select a dropdown item. A missing popup item may require opening its parent first. Use `click -Method Mouse` when exploration shows UIA Invoke does not cause the expected transition; observe before retrying a possibly completed action.
 
-`type` accepts literal text and never uses the clipboard. `-Verify` reads UIA text without resending input. `-PreDelete` defaults to TextPattern selection plus Backspace; `-ClearMethod Shortcut` explicitly uses Ctrl+A and may only be used when permitted. Report an unsupported read/selection rather than silently substituting another route. `verified: null` means verification was not requested.
+`type` accepts literal text and never uses the clipboard. `-Verify` reads UIA text without resending input. `-PreDelete` defaults to TextPattern or standard Windows Edit selection plus keyboard Backspace; `-ClearMethod Shortcut` explicitly uses Ctrl+A and may only be used when permitted. Report an unsupported read/selection rather than silently substituting another route. `verified: null` means verification was not requested.
 
 Use unique execution paths and `wait-file -MinBytes 1 -StableMs 500` before inspecting asynchronous output. Assert `conditionMet`, then validate required format/content; stability alone is not correctness. Before a GUI run, parse the script and validate paths/CSV. Compute path defaults in the body and avoid PowerShell automatic variable names. Preserve failed attempts for analysis.
 
@@ -174,7 +174,7 @@ Coordinate clicks and drags are allowed only when selector-based automation is n
 
 The template accepts `-InteractionPolicy`, `-PolicyReason`, and `-Transport`. InProcess is the default; Process preserves the previous transport. Policy is fixed at initialization. Result `interactionPolicy` records mode, reason, and compliance. `timing` records totalMs, wrapperMs, backendMs, commandOverheadMs, waitMs, cleanupMs, and otherMs; wait/cleanup overlap command timing. `Complete-AGTAGeneratedTest -PassThru` returns the result object without emitting JSON and never exits its caller. Entry points must emit the result and then call `exit (Get-AGTATestExitCode)`.
 
-Use `Read-AGTAArtifactBytes` / `Assert-ArtifactPrefix` for bounded shared reads after stable-file waits; content assertions still belong to the testcase. Direct static `File.ReadAllBytes` calls are rejected in generated-script preflight because they can conflict with the application's open file handle. Runtime `start` waits briefly for a closing prior instance, rejects one that remains, and automatically registers a newly owned process. Explicit `Register-OpenedProcess -StartResult` remains idempotent but is not needed after `Invoke-StepCommand start`; legacy process-name registration is rejected.
+Use `Read-AGTAArtifactBytes` / `Assert-ArtifactPrefix` for bounded shared reads after stable-file waits; content assertions still belong to the testcase. Direct static `File.ReadAllBytes` calls are rejected in generated-script preflight because they can conflict with the application's open file handle. Runtime `start` defaults to RequireNewWindow: it allows existing processes, requires a new window, and registers either a new process or just the new window in an existing host. Explicit RequireNewProcess retains strict process isolation. Explicit `Register-OpenedProcess -StartResult` remains idempotent but is not needed after `Invoke-StepCommand start`; legacy process-name registration is rejected.
 
 ## Preflight and readback
 

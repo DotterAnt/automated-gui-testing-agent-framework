@@ -3,6 +3,14 @@ function Resolve-AGTACommandArguments {
     param([string]$Command,[string[]]$Arguments=@())
     $values=@($Arguments)
     if ($Command -eq 'observe' -and -not @($values | Where-Object {$_ -match '^--?Format(?:=|$)'}).Count) { $values+=@('-Format','Compact') }
+    if ($Command -eq 'start') {
+        $modes=@($values | Where-Object {$_ -match '^--?RequireNew(?:Process|Window)(?:=|$)'})
+        if (-not $modes.Count) { $values+=@('-RequireNewWindow','true') }
+        foreach ($option in $modes) {
+            $position=[array]::IndexOf($values,$option)
+            if ($option -match '=(?:false|0|no|off)$' -or ($position+1 -lt $values.Count -and $values[$position+1] -match '^(?:false|0|no|off)$')) { throw 'Framework start requires new-window or new-process ownership. Use focus for deliberate reuse; it does not claim the host process.' }
+        }
+    }
     return $values
 }
 
@@ -104,7 +112,13 @@ function Complete-AGTAExploration {
     $receipts=@(Get-Content -LiteralPath $paths.transcript | ForEach-Object { $_ | ConvertFrom-Json })
     foreach ($receipt in @($receipts | Where-Object { $_.command -eq 'start' -and $_.result.ok -and $_.result.data.ownedProcessId })) {
         $live=Get-Process -Id $receipt.result.data.ownedProcessId -ErrorAction SilentlyContinue
-        if ($live -and $live.MainWindowHandle -ne [IntPtr]::Zero) { throw 'An exploration-owned application window is still open. Close it through the GUI and verify cleanup before completing the walkthrough.' }
+        if ($live -and (-not $receipt.result.data.ownedProcessStartTime -or $receipt.result.data.ownedProcessStartTime -eq $live.StartTime.ToUniversalTime().Ticks.ToString()) -and $live.MainWindowHandle -ne [IntPtr]::Zero) { throw 'An exploration-owned application window is still open. Close it through the GUI and verify cleanup before completing the walkthrough.' }
+    }
+    foreach ($receipt in @($receipts | Where-Object {$_.result.ok -and $_.result.data.ownedWindow})) {
+        $cli=Import-Module (Join-Path (Split-Path $manifest.potatoCliPath) 'PoTAToCli\PoTAToCli.psm1') -PassThru
+        $identity=$receipt.result.data.ownedWindow | ConvertTo-Json -Compress
+        $remaining=& $cli {param($json,$root) Invoke-PotatoCliCommand windows @('-WindowIdentityJson',$json) -CliRoot $root -AsObject} $identity (Split-Path $manifest.potatoCliPath)
+        if (-not $remaining.ok -or $remaining.data.count -gt 0) { throw 'An exploration-owned window is still open or could not be checked. Close that window through the GUI; do not terminate its shared host process.' }
     }
     $manifest.completed=$true
     $manifest.completedAt=(Get-Date).ToString('o')
@@ -142,6 +156,7 @@ function Get-AGTAExplorationStatus {
         steps=$m.steps;commandCount=$receipts.Count;
         recentFailures=@($receipts | Where-Object {-not (Test-AGTAExplorationCommandSucceeded $_.result $_.command)} | Select-Object -Last 5 | ForEach-Object { @{id=$_.id;stepIndex=$_.stepIndex;command=$_.command;error=$_.result.error} });
         ownedProcessIds=@($receipts | Where-Object {$_.command -eq 'start' -and $_.result.ok} | ForEach-Object {$_.result.data.ownedProcessId});
+        ownedWindows=@($receipts | Where-Object {$_.result.ok -and $_.result.data.ownedWindow} | ForEach-Object {$_.result.data.ownedWindow});
         transcriptPath=$paths.transcript;explorationPath=$paths.manifest;
         explorationEvidenceRoot=$paths.evidenceRoot;explorationEvidenceRootExists=[IO.Directory]::Exists($paths.evidenceRoot)}
 }

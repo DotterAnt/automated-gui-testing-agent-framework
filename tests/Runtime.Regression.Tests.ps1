@@ -167,6 +167,14 @@ exit (Get-AGTATestExitCode)
     # Exercise cleanup state handling without sending any desktop command.
     $ctx=Initialize-AGTAGeneratedTest -PotatoCliPath $cliPath -TestCaseCsv $csv -RunRoot $testRoot
     Register-OpenedProcess -StartResult ([pscustomobject]@{ok=$true;data=@{ownedProcessId=$PID}})
+    $arguments=@(Resolve-AGTACommandArguments start @('-ProcessName','fixture.exe'))
+    Check ($arguments[-2] -eq '-RequireNewWindow' -and $arguments[-1] -eq 'true') 'Framework still requires a new shell process.'
+    Check ((@(Resolve-AGTACommandArguments start $arguments) -join '|') -eq ($arguments -join '|')) 'Ownership defaults are not idempotent in receipts.'
+    $disabled=$false
+    try {Resolve-AGTACommandArguments start @('-RequireNewWindow','false') | Out-Null} catch {$disabled=$true}
+    Check $disabled 'Framework launch ownership was silently disabled.'
+    Register-OpenedProcess -StartResult ([pscustomobject]@{ok=$true;data=@{ownedProcessId=2147483647}})
+    Check ($script:AGTAOpenedProcessNames.Count -eq 1) 'An exited launcher threw or registered an unrelated owner.'
     $script:remaining=1
     $script:closeArgs=@()
     function Invoke-PotatoJson {
@@ -185,6 +193,17 @@ exit (Get-AGTATestExitCode)
     $script:remaining=0
     $cleanup=@(Invoke-TestCleanup -CloseTimeoutMs 0 -PromptTimeoutMs 0)
     Check (@($cleanup | Where-Object { $_.ok -eq $false }).Count -eq 0) 'Clean ownership cleanup failed.'
+    $savedProcesses=$script:AGTAOpenedProcessNames
+    $script:AGTAOpenedProcessNames=@()
+    $script:AGTAOpenedWindows=@(@{nativeWindowHandle=123;processId=456;processStartTime='789';className='Fixture'})
+    $script:remaining=1
+    $cleanup=@(Invoke-TestCleanup -CloseTimeoutMs 0)
+    Check (@($cleanup | Where-Object {$_.action -eq 'close-owned-window' -and -not $_.ok}).Count -eq 1) 'Window cleanup hid a pending prompt.'
+    Check ($script:closeArgs[0] -eq '-WindowIdentityJson' -and @($cleanup | Where-Object {$_.action -eq 'preserve-potato-state'}).Count -eq 1) 'Shared-host cleanup used a process selector or erased recovery state.'
+    $script:remaining=0
+    $cleanup=@(Invoke-TestCleanup -CloseTimeoutMs 0)
+    Check (@($cleanup | Where-Object {-not $_.ok}).Count -eq 0) 'Closed window required shared-process exit.'
+    $script:AGTAOpenedWindows=@();$script:AGTAOpenedProcessNames=$savedProcesses
     # Exit between a window snapshot and the next owner check must not report
     # the stale snapshot as a cleanup failure or target a reused PID.
     $script:remaining=1; $script:ownerChecks=0

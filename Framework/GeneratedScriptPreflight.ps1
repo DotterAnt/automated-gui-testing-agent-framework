@@ -110,6 +110,9 @@ function Test-AGTAGeneratedScript {
     # Literal embedded scripts were the observed OLE DB/PDF-fabrication escape.
     # Inspect code strings as well as PowerShell calls, without executing them.
     foreach ($literal in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst] -or $node -is [Management.Automation.Language.ExpandableStringExpressionAst]}, $true))) {
+        if ($literal.Value -match '(?i)\bFileProtocolHandler\b|\bShellExec_RunDLL\b|/[ck]\s+start\b|(?:javascript|vbscript):.*(?:\.Run|ShellExecute)|\bStart-Process\s+.*://') {
+            $issues += "Line $($literal.Extent.StartLineNumber): shell/protocol launcher bypasses the GUI file-opening route. Use a new file-manager window, its visible Open action, and focus the resulting viewer."
+        }
         if ($literal.Value -match '(?i)\bExecuteNonQuery\s*\(|\b(?:SendInput|SendWait|GetActiveObject|GetTypeFromProgID)\s*\(|New-Object\s+-ComObject\b|System\.Drawing\.Printing\.PrintDocument|\b(?:reportlab|fpdf)\b|%PDF-\d') {
             $issues += "Line $($literal.Extent.StartLineNumber): embedded mutation/input/artifact-generation code requires removal; expected outputs must be produced through the tested GUI."
         }

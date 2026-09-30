@@ -98,6 +98,7 @@ function Initialize-AGTAGeneratedTest {
         FinalOk = $false
     }
     $script:AGTAOpenedProcessNames = @()
+    $script:AGTAOpenedWindows = @()
     $script:AGTACreatedExternalPaths = @()
     $script:AGTACommandIndex = 0
 
@@ -149,7 +150,6 @@ function Invoke-PotatoJson {
         throw 'Per-command InteractionPolicy overrides are forbidden. Use the declared run policy.'
     }
     $effectiveArgs = @($Arguments) + @('-InteractionPolicy', $context.InteractionPolicy)
-    if ($Command -eq 'start') { $effectiveArgs += @('-RequireNewProcess', 'true') }
     $parsed = $null
     try {
         if ($context.Transport -eq 'InProcess') {
@@ -180,6 +180,9 @@ function Invoke-PotatoJson {
     if ($Command -in @('wait-file','wait-element')) { $context.Timing.waitMs += [long]$parsed.durationMs }
 
     if ($Command -eq 'start' -and $parsed.ok -and $parsed.data.ownedProcessId) { Register-OpenedProcess -StartResult $parsed }
+    if ($parsed.ok -and $parsed.data.ownedWindow) {
+        $script:AGTAOpenedWindows+=,$parsed.data.ownedWindow
+    }
     $script:AGTACommandIndex++
     [ordered]@{
         index = $script:AGTACommandIndex
@@ -401,7 +404,11 @@ function Register-OpenedProcess {
     Assert-PotatoOk $StartResult
     $ownedId = $StartResult.data.ownedProcessId
     if (-not $ownedId) { throw 'Start returned no ownedProcessId. Invoke-StepCommand registers valid ownership automatically; inspect the start result instead of bypassing scoped cleanup.' }
-    $owned = Get-Process -Id $ownedId -ErrorAction Stop
+    $owned = Get-Process -Id $ownedId -ErrorAction SilentlyContinue
+    # Legacy launchers can exit between command return and registration.
+    # A dead launcher is already cleaned up, not a transport failure.
+    if (-not $owned) { return }
+    if ($StartResult.data.ownedProcessStartTime -and $owned.StartTime.ToUniversalTime().Ticks.ToString() -ne $StartResult.data.ownedProcessStartTime) { return }
     if (@($script:AGTAOpenedProcessNames | Where-Object { $_.Id -eq $owned.Id -and $_.StartTime -eq $owned.StartTime }).Count) { return }
     $script:AGTAOpenedProcessNames += [pscustomobject]@{Id=$owned.Id;StartTime=$owned.StartTime}
 }
@@ -489,6 +496,23 @@ function Invoke-TestCleanup {
     $records = @()
 
     $cleanupWatch = [Diagnostics.Stopwatch]::StartNew()
+    foreach ($ownedWindow in @($script:AGTAOpenedWindows)) {
+        if (-not $ownedWindow) {continue}
+        try {
+            $identity=$ownedWindow | ConvertTo-Json -Compress
+            $arguments=@('-WindowIdentityJson',$identity,'-TimeoutMs','0')
+            $closed=Invoke-PotatoJson 'close-window' $arguments
+            Assert-PotatoOk $closed
+            $until=[Diagnostics.Stopwatch]::StartNew()
+            do {
+                $remaining=Invoke-PotatoJson 'windows' $arguments
+                Assert-PotatoOk $remaining
+                if ($remaining.data.count -eq 0 -or $until.ElapsedMilliseconds -ge $CloseTimeoutMs) {break}
+                Start-Sleep -Milliseconds 100
+            } while ($true)
+            $records+=[pscustomobject]@{action='close-owned-window';target=$ownedWindow;ok=($remaining.data.count -eq 0);error=$(if ($remaining.data.count) {'Owned window remains open. Resolve its visible prompt; the shared host was preserved.'})}
+        } catch { $records+=[pscustomobject]@{action='close-owned-window';target=$ownedWindow;ok=$false;error=$_.Exception.Message} }
+    }
     foreach ($owned in $script:AGTAOpenedProcessNames) {
         try {
             $live = Get-Process -Id $owned.Id -ErrorAction SilentlyContinue
@@ -574,7 +598,7 @@ function Invoke-TestCleanup {
     }
 
     try {
-        $pendingOwned = @($records | Where-Object { $_.action -eq 'close-owned-process' -and -not $_.ok })
+        $pendingOwned = @($records | Where-Object { $_.action -in @('close-owned-process','close-owned-window') -and -not $_.ok })
         if ($pendingOwned.Count) {
             $records += [pscustomobject]@{action='preserve-potato-state';target='session';ok=$true;error=$null}
         } else {

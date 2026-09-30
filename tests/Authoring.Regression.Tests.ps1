@@ -189,6 +189,12 @@ $app=New-Object -ComObject Example.Application
     Check (Invoke-AGTAAgentTool finalize @{scriptPath=$written.path;summary='Synthetic execution fixture'} $context).final 'API rejected an unchanged validated artifact.'
     'Write-Output "changed"' | Set-Content $written.path
     Reject { Invoke-AGTAAgentTool finalize @{scriptPath=$written.path;summary='Stale validation'} $context } 'API accepted stale execution evidence after a script change.'
+    foreach ($wrapper in @('function Launch { return ''/c start "" "protocol:document" & timeout /t 60'' }', 'function Launch { return ''url.dll,FileProtocolHandler protocol:document'' }')) {
+        $wrapperFile=Join-Path $root 'wrapper.ps1'
+        Set-Content -LiteralPath $wrapperFile -Value $wrapper
+        $assessment=Test-AGTAGeneratedScript -ScriptPath $wrapperFile -PolicyOnly
+        Check (-not $assessment.ok -and ($assessment.issues -join ' ') -match 'shell/protocol launcher') 'Observed launcher workaround passed static audit.'
+    }
     "Authoring checks: $script:checks passed"
 } finally {
     $resolved=[IO.Path]::GetFullPath($root)
