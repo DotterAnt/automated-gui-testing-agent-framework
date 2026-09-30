@@ -316,6 +316,8 @@ function Set-AGTAAuthoringStage {
         stage = $Stage
         previousStage = $previousStage
         stageLogPath = $stageLogPath
+        explorationEvidenceRoot = (Get-AGTAExplorationPaths $Context.Run.runRoot).evidenceRoot
+        explorationEvidenceRootExists = [IO.Directory]::Exists((Get-AGTAExplorationPaths $Context.Run.runRoot).evidenceRoot)
     }
 }
 

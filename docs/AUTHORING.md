@@ -12,6 +12,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-Exploration.ps1
 
 Keep that exact RunRoot. Begin stores the CSV path, CLI path and policy and returns the testcase rows. Map each row's GUI route, assertion, dependencies and unknowns. Send the request and execute it in ONE shell tool call:
 
+Begin also creates and returns the absolute `explorationEvidenceRoot` (`<RunRoot>\evidence\exploration`). Build exploration filenames inside that existing directory; preserve the full returned path. This prepares an empty infrastructure folder only; all expected files still come from the application's GUI. Generated execution has its own existing `Context.ExecutionEvidenceRoot`. Arbitrary extra subfolders are not automatically created. If a testcase specifically requires creating a folder through the GUI, perform that route for the testcase folder. Status returns the exploration directory and whether it still exists.
+
 ~~~powershell
 $OutputEncoding = New-Object Text.UTF8Encoding($false)
 @'
@@ -80,6 +82,8 @@ press-key accepts Tab, ShiftTab, Enter, Escape and arrow keys with FallbackReaso
 Normal type with a selector checks writability and focus, so a separate click is usually unnecessary. PreDelete uses UIA text selection and Backspace. type -Verify polls current readback without committing or resending. For commit-on-exit editors, type once, commit through a visible action/permitted Enter, then read/assert. NormalizedExact/NormalizedContains reconcile line endings. Relative element clicks and selector drag/drop use live bounds; verify the actual resulting state.
 
 For field replacement prefer writable type -PreDelete -Verify. If the observed field is opaque but already focused, use -TargetMode Focused -ExpectedFocusJson '{"AutomationId":"<observed-id>"}' -FocusTimeoutMs 2000 plus fallback evidence. This waits for the expected owned focus without clicking or selecting anything. It preserves a selected default filename. Do not insert a click merely to wait for readiness: that can remove the selection and append the new path. Multiline input needs the writable Document control; a nested Edit may represent only one line. Use read to inspect text, never empty typing.
+
+For filename input add `-PathKind SaveFile` (existing parent), `OpenFile` (existing file), or `Directory` (existing folder). This checks the literal absolute `-Text` path before focus/clearing/typing and creates nothing. Use the same full path for typing and `wait-file`; do not copy shortened labels from dialogs, add quote characters inside Text, or double-escape beyond the JSON syntax. `PathValidationFailed` stops the batch before a dependent Save click. An absolute path alone does not ensure its parent exists. For a missing infrastructure folder use the prepared directory; creating a new empty run subfolder is allowed with `[IO.Directory]::CreateDirectory($absoluteDirectory)`, but creating expected files directly is forbidden. Input validation is separate from field readback and persistence verification.
 
 Only explicit user/testcase authorization permits AllowShortcuts with PolicyReason. Do not override policy per command. Clipboard remains unsupported. Keep desktop actions sequential. outcome:unknown requires observing before retry. Provider calls can exceed the selector retry timeout.
 

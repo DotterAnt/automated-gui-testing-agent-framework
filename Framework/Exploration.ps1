@@ -1,7 +1,9 @@
 # Evidence-backed authoring checkpoint. This is an audit trail, not a sandbox.
 function Get-AGTAExplorationPaths {
     param([string]$RunRoot)
-    @{ manifest=(Join-Path $RunRoot 'logs\exploration.json'); transcript=(Join-Path $RunRoot 'logs\exploration-commands.jsonl') }
+    $RunRoot=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RunRoot)
+    @{ manifest=(Join-Path $RunRoot 'logs\exploration.json'); transcript=(Join-Path $RunRoot 'logs\exploration-commands.jsonl');
+        evidenceRoot=(Join-Path $RunRoot 'evidence\exploration') }
 }
 
 function Initialize-AGTAExploration {
@@ -12,9 +14,11 @@ function Initialize-AGTAExploration {
     $rows=@(Import-Csv -LiteralPath $TestCaseCsv)
     if (-not $rows.Count) { throw 'Exploration needs a nonempty testcase CSV.' }
     New-Item -ItemType Directory -Path (Split-Path $paths.manifest) -Force | Out-Null
+    # Prepare infrastructure only. The application must create all testcase outputs through its GUI.
+    [void][IO.Directory]::CreateDirectory($paths.evidenceRoot)
     $value=[ordered]@{schemaVersion=1;testCasePath=(Get-Item -LiteralPath $TestCaseCsv).FullName;potatoCliPath=$PotatoCliPath;testCaseHash=(Get-FileHash -LiteralPath $TestCaseCsv -Algorithm SHA256).Hash;
         interactionPolicy=$InteractionPolicy;startedAt=(Get-Date).ToString('o');completedAt=$null;completed=$false;
-        stepCount=$rows.Count;steps=@();transcriptPath=$paths.transcript;transcriptHash=$null}
+        stepCount=$rows.Count;steps=@();transcriptPath=$paths.transcript;transcriptHash=$null;explorationEvidenceRoot=$paths.evidenceRoot}
     $value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $paths.manifest -Encoding UTF8
     $value
 }
@@ -130,7 +134,8 @@ function Get-AGTAExplorationStatus {
         steps=$m.steps;commandCount=$receipts.Count;
         recentFailures=@($receipts | Where-Object {-not (Test-AGTAExplorationCommandSucceeded $_.result $_.command)} | Select-Object -Last 5 | ForEach-Object { @{id=$_.id;stepIndex=$_.stepIndex;command=$_.command;error=$_.result.error} });
         ownedProcessIds=@($receipts | Where-Object {$_.command -eq 'start' -and $_.result.ok} | ForEach-Object {$_.result.data.ownedProcessId});
-        transcriptPath=$paths.transcript;explorationPath=$paths.manifest}
+        transcriptPath=$paths.transcript;explorationPath=$paths.manifest;
+        explorationEvidenceRoot=$paths.evidenceRoot;explorationEvidenceRootExists=[IO.Directory]::Exists($paths.evidenceRoot)}
 }
 
 function Test-AGTAExploration {

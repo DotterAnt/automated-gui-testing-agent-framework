@@ -10,7 +10,13 @@ function Reject([scriptblock]$body,$message) { $caught=$false; try { & $body | O
 try {
     $csv=Join-Path $root 'case.csv'
     'Action,Data,Expected Result','Create fixture,,Visible fixture','Reopen fixture,,Persisted fixture' | Set-Content $csv
-    Initialize-AGTAExploration $root $csv GuiNavigation | Out-Null
+    $initialized=Initialize-AGTAExploration $root $csv GuiNavigation
+    Check ([IO.Directory]::Exists($initialized.explorationEvidenceRoot) -and @(Get-ChildItem -LiteralPath $initialized.explorationEvidenceRoot).Count -eq 0) 'Exploration did not prepare an empty output directory.'
+    Push-Location $root
+    try {
+        $relative=Initialize-AGTAExploration '.\relative [folder]' $csv GuiNavigation
+        Check ($relative.explorationEvidenceRoot -eq (Join-Path $root 'relative [folder]\evidence\exploration') -and [IO.Directory]::Exists($relative.explorationEvidenceRoot)) 'Relative exploration output root did not follow the PowerShell location or literal directory name.'
+    } finally { Pop-Location }
     Reject { Complete-AGTAExploration $root $csv GuiNavigation } 'Empty exploration passed.'
     Reject { Complete-AGTAExplorationStep $root 1 'route' 'result' 'fabricated-id' } 'Invented evidence passed.'
     Check (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=1}}}).eligible 'Window observation was rejected as evidence.'
@@ -96,11 +102,13 @@ $app=New-Object -ComObject Example.Application
     $savedRoot=Join-Path $root 'saved configuration with spaces'
     $begin=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Begin -RunRoot $savedRoot -TestCaseCsv $csv -PotatoCliPath $cli -InteractionPolicy VisibleControls | ConvertFrom-Json
     Check ($begin.ok -and $begin.steps.Count -eq 2) 'Begin did not return the testcase context.'
+    Check ($begin.explorationEvidenceRoot -eq (Join-Path $savedRoot 'evidence\exploration') -and [IO.Directory]::Exists($begin.explorationEvidenceRoot)) 'Begin did not return an existing absolute output folder.'
     $requestsContent | ConvertTo-Json -Depth 6 | Set-Content $requests
     $saved=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsPath $requests | ForEach-Object {$_ | ConvertFrom-Json})
     Check ($LASTEXITCODE -eq 0 -and $saved.Count -eq 2 -and $saved[0].ok) 'Batch lost persisted CSV/CLI/policy configuration.'
     $status=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Status -RunRoot $savedRoot | ConvertFrom-Json
     Check ($status.interactionPolicy -eq 'VisibleControls' -and $status.missingSteps.Count -eq 2 -and $status.commandCount -eq 2) 'Status hid missing rows or weakened the saved strict policy.'
+    Check ($status.explorationEvidenceRoot -eq $begin.explorationEvidenceRoot -and $status.explorationEvidenceRootExists) 'Status lost the prepared output folder.'
     $oldOutputEncoding=$OutputEncoding
     $OutputEncoding=New-Object Text.UTF8Encoding($false)
     try {
@@ -115,6 +123,9 @@ $app=New-Object -ComObject Example.Application
         $invalidResult=$invalid | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsStdin | ConvertFrom-Json
         Check (-not $invalidResult.ok -and (Get-AGTAExplorationStatus $savedRoot).commandCount -eq $priorCount) 'Invalid stdin batch dispatched a partial batch before validation.'
     } finally { $OutputEncoding=$oldOutputEncoding }
+    @(@{stepIndex=1;command='type';arguments=@('-Text',(Join-Path $savedRoot 'missing\output.ext'),'-PathKind','SaveFile')},@{stepIndex=1;command='help';arguments=@()}) | ConvertTo-Json -Depth 6 | Set-Content $requests
+    $badPath=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsPath $requests | ForEach-Object {$_ | ConvertFrom-Json})
+    Check ($LASTEXITCODE -eq 1 -and $badPath.Count -eq 1 -and $badPath[0].error.type -eq 'PathValidationFailed' -and $badPath[0].outcome -eq 'not-dispatched' -and -not $badPath[0].verification.eligible) 'Batch continued after an invalid filename path or treated it as verified evidence.'
     $helperHelp=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $frameworkRoot 'Get-RuntimeHelp.ps1') -Names Invoke-StepCommand,Assert-TextContains | ConvertFrom-Json
     Check ($LASTEXITCODE -eq 0 -and $helperHelp.Count -eq 2 -and $helperHelp[1].name -eq 'Assert-TextContains') 'Combined runtime help lost a requested signature.'
     $changed=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsPath $requests -InteractionPolicy GuiNavigation | ConvertFrom-Json
@@ -156,7 +167,8 @@ $app=New-Object -ComObject Example.Application
     $generated=Join-Path $apiRoot 'generated'; New-Item -ItemType Directory $generated -Force | Out-Null
     $context=[pscustomobject]@{TestCaseCsv=$csv;Steps=@(Import-Csv $csv);InteractionPolicy='GuiNavigation';PotatoCliPath=$cli;Execute=$true;Run=@{runRoot=$apiRoot;logs=(Join-Path $apiRoot 'logs');generated=$generated}}
     Invoke-AGTAAgentTool set_authoring_stage @{stage='planning';summary='Fixture plan'} $context | Out-Null
-    Invoke-AGTAAgentTool set_authoring_stage @{stage='exploration';summary='Fixture walkthrough'} $context | Out-Null
+    $apiStage=Invoke-AGTAAgentTool set_authoring_stage @{stage='exploration';summary='Fixture walkthrough'} $context
+    Check ($apiStage.explorationEvidenceRootExists -and [IO.Directory]::Exists($apiStage.explorationEvidenceRoot)) 'API exploration did not expose an existing output folder.'
     Reject { Invoke-AGTAAgentTool set_authoring_stage @{stage='development_iteration';summary='Too early'} $context } 'API stage advanced without exploration.'
     for ($i=1;$i -le 2;$i++) {
         Add-AGTAExplorationCommand $apiRoot $i click @() @{ok=$true} | Out-Null

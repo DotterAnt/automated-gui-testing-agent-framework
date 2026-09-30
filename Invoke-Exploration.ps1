@@ -53,8 +53,8 @@ try {
         Begin {
             if (-not $TestCaseCsv) { throw 'Begin requires TestCaseCsv.' }
             Initialize-AGTAExploration $RunRoot $TestCaseCsv $InteractionPolicy (Get-Item -LiteralPath $PotatoCliPath).FullName | Out-Null
-            $result=@{ok=$true;runRoot=$RunRoot;explorationPath=$paths.manifest;steps=@(Import-Csv -LiteralPath $TestCaseCsv);
-                next='Set $OutputEncoding to UTF8Encoding(false), then pipe a JSON request array to powershell.exe -NoProfile -ExecutionPolicy Bypass -File Invoke-Exploration.ps1 -Action Batch -RunRoot <this-root> -RequestsStdin. This combines request creation and execution in one tool call. RequestsPath JSON files also work. Use RecordSteps for reviewed receipts, then close the owned app and Complete.'}
+            $result=@{ok=$true;runRoot=$RunRoot;explorationPath=$paths.manifest;explorationEvidenceRoot=$paths.evidenceRoot;steps=@(Import-Csv -LiteralPath $TestCaseCsv);
+                next='Build GUI output filenames inside the existing explorationEvidenceRoot and add type -PathKind SaveFile/OpenFile. Set $OutputEncoding to UTF8Encoding(false), then pipe a JSON request array to powershell.exe -NoProfile -ExecutionPolicy Bypass -File Invoke-Exploration.ps1 -Action Batch -RunRoot <this-root> -RequestsStdin. This combines request creation and execution in one tool call. RequestsPath JSON files also work. Use RecordSteps for reviewed receipts, then close the owned app and Complete.'}
         }
         { $_ -in @('Command','Batch') } {
             if ($m.completed) { throw 'Exploration is complete; no action was dispatched.' }

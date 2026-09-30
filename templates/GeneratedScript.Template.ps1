@@ -34,6 +34,8 @@ $Context = Initialize-AGTAGeneratedTest -PotatoCliPath $PotatoCliPath -TestCaseC
 $RunRoot = $Context.RunRoot
 # Build GUI output paths from the absolute context, for example:
 # $OutputPath = Join-Path $Context.ExecutionEvidenceRoot 'output.ext'
+# Context.ExecutionEvidenceRoot already exists. Add -PathKind SaveFile/OpenFile
+# to type -Text $OutputPath; extra subdirectories must exist before filename entry.
 # One scriptblock per CSV row, in order. Keep actions/assertions specific to the
 # testcase here; the runtime handles dependency skips, cleanup and final output.
 $StepBodies = @(
