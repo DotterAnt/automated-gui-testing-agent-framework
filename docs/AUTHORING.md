@@ -2,6 +2,12 @@
 
 Read this page, the testcase CSV, and templates/GeneratedScript.Template.ps1 together. They are sufficient to begin. Do not read whole runtime/preflight modules, unrelated CSVs, or application examples speculatively. Consult Get-RuntimeHelp.ps1 for a specific missing helper signature.
 
+## Completion requirement
+
+Unless the user explicitly asks for a narrower scope, finish the whole task in the current session: explore every CSV row through the GUI, record all verified rows and Complete the walkthrough, generate the script, then execute and repair it until the current script passes every row, its required assertions, and cleanup. Continue between stages without asking the user to prompt you again. Creating the first output file, writing the script, passing syntax/preflight, or completing only exploration does not finish the task. Replay after the last behavior change; an earlier run does not validate the delivered revision.
+
+An `Exploration is incomplete` error is an instruction to continue the walkthrough. Use Status to find missing rows, perform any untested actions, record the real observations, and Complete before generating or executing. Do not describe the script as finished or "blocked only by exploration" while those actions are still available. A recoverable command failure calls for targeted observation and bounded recovery, not final delivery. Stop early only on an explicit user request or a concrete blocker that remains after permitted recovery and needs unavailable access, information, or capability. Report the unfinished rows, observed failure, attempted recovery, and exact intervention needed; keep the result incomplete without fabricating evidence or relaxing assertions.
+
 ## Start with the supported transport
 
 Use the following from a shell, including hosts where script execution is disabled. Pipe UTF-8 JSON directly to the batch entrypoint; this preserves arrays, quotes, spaces and Unicode across powershell.exe -File. Do not pass -Arguments @(...) across that process boundary or invent a temporary PowerShell wrapper for every call.

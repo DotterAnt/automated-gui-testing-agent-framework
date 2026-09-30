@@ -167,7 +167,7 @@ function Test-AGTAExploration {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'Completed exploration manifest is required. Use Invoke-Exploration.ps1 for every CSV row before generating the script.' }
         $m=Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
         if ($m.schemaVersion -ne 1) { throw 'Unsupported exploration manifest version.' }
-        if (-not $m.completed -or -not $m.completedAt) { throw 'Exploration is incomplete.' }
+        if (-not $m.completed -or -not $m.completedAt) { throw 'Exploration is incomplete. Resume the existing walkthrough: use Status, finish and record every missing CSV row, then Complete before generating or executing. This is unfinished work, not a final-delivery result.' }
         if ($m.interactionPolicy -ne $InteractionPolicy) { throw 'Exploration and execution policies differ.' }
         if ($m.testCaseHash -ne (Get-FileHash -LiteralPath $TestCaseCsv -Algorithm SHA256).Hash) { throw 'Exploration belongs to a different testcase CSV.' }
         if ($m.transcriptHash -ne (Get-FileHash -LiteralPath $m.transcriptPath -Algorithm SHA256).Hash) { throw 'Exploration transcript changed after completion.' }
