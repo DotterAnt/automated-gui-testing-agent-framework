@@ -81,6 +81,8 @@ API authoring uses run_potato with stepIndex and record_exploration_step, then t
 
 ## Discover once, act on what was observed
 
+The CLI loads standard Windows UI Automation providers, including native dropdowns and menus. Prefer `click -Method Auto` on an observed dropdown, inspect its named choices, then click the intended item and verify the selection. Do not guess how many arrow presses reach an option. Repeated navigation stops on a changed window (and arrows on a changed focus target); observe before continuing. A command dispatch is not proof that the selection or dialog transition finished. Changing system settings through CIM/WMI or configuration cmdlets to avoid a GUI interaction is a bypass, including changing the default printer before opening its dialog.
+
 Framework observations default to Compact in shell exploration, API exploration and generated execution; explicit Format Full is preserved. Receipts record the effective format. Reuse tested arguments, including input pacing and focus guards. A newly launched process can restore prior documents: inspect the initial state and reach a verified blank document through the GUI before typing; restarting alone is not a reset.
 
 - Use click's default Auto. It chooses supported UIA patterns or a visible mouse click. Explicit Invoke is only for a confirmed InvokePattern. A failed explicit method is not evidence that the desired action happened.

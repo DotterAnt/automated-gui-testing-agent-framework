@@ -83,6 +83,9 @@ function Test-AGTAGeneratedScript {
             $issues += "Line $($call.Extent.StartLineNumber): generated scripts must not compile/load private input backends. Use type, press-key, or relative click through the CLI."
         }
         if ($name -eq 'Start-Process') { $issues += "Line $($call.Extent.StartLineNumber): use recorded CLI start for executable launches and the GUI Open route for documents; direct Start-Process bypasses ownership and route checks." }
+        if ($name -in @('Invoke-CimMethod','Invoke-WmiMethod','Set-CimInstance','New-CimInstance','Remove-CimInstance','Set-WmiInstance','Remove-WmiObject','Set-Printer','Add-Printer','Remove-Printer','Rename-Printer')) {
+            $issues += "Line $($call.Extent.StartLineNumber): '$name' changes system/application state outside the recorded GUI route. Use visible controls; read-only management queries remain available for verification."
+        }
         if ($PolicyOnly) { continue }
         if (-not $name -or $localFunctions.ContainsKey($name)) { continue }
         $checked++
@@ -101,6 +104,9 @@ function Test-AGTAGeneratedScript {
     foreach ($memberCall in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst]}, $true))) {
         if ($memberCall.Member.Extent.Text -match '^(?i:SendWait|SendText|SendInput|mouse_event|SetCursorPos|GetActiveObject|GetTypeFromProgID|CreateInstance|ExecuteNonQuery|SetValue)$') {
             $issues += "Line $($memberCall.Extent.StartLineNumber): direct '$($memberCall.Member.Extent.Text)' can bypass GUI input or create expected data. Use the CLI for actions and read-only artifact checks for verification."
+        }
+        if ($memberCall.Member.Extent.Text -eq 'SetDefaultPrinter') {
+            $issues += "Line $($memberCall.Extent.StartLineNumber): change printer selection through its visible GUI, not a direct system configuration method."
         }
         if ($memberCall.Static -and $memberCall.Member.Extent.Text -eq 'ReadAllBytes' -and
             $memberCall.Expression.Extent.Text -match '^\[(?:System\.)?IO\.File\]$') {
