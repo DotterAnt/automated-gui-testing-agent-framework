@@ -9,26 +9,28 @@ Perform every CSV row through the GUI, including save, close/reopen, print/expor
 ## Begin once
 
 ~~~powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-Exploration.ps1 -Action Begin -RunRoot .\runs\walkthrough-unique -TestCaseCsv '<supplied.csv>'
+& .\Invoke-Exploration.ps1 -Action Begin -RunRoot .\runs\walkthrough-unique -TestCaseCsv '<supplied.csv>'
 ~~~
 
 Keep the returned absolute RunRoot and explorationEvidenceRoot. Begin saves CSV/CLI/policy configuration. Its evidence directory already exists; use it for exploration filenames. Execution uses Context.ExecutionEvidenceRoot. Keep full paths and add type -PathKind SaveFile/OpenFile for filename fields. Extra subfolders must already exist. Infrastructure preparation does not create expected outputs; the GUI must create them.
 
 ## Batch known routes
 
-Batch accepts 1..20 sequential commands, records every receipt and stops at the first failure/unmet wait. Group known actions with their postcondition; end at an observation when the next state is unknown. In ONE shell tool call, pipe literal UTF-8 JSON:
+Batch accepts 1..20 sequential commands, records every receipt and stops at the first failure/unmet wait. Group known actions with their postcondition; end at an observation when the next state is unknown. In a PowerShell shell tool, invoke the script directly with a literal JSON string in ONE call:
 
 ~~~powershell
-$OutputEncoding = New-Object Text.UTF8Encoding($false)
-@'
+$requests = @'
 [
   {"stepIndex":1,"command":"start","arguments":["-ProcessName","app.exe","-Maximize"]},
   {"stepIndex":1,"command":"observe","arguments":["-Depth","3","-MaxElements","80"]}
 ]
-'@ | powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-Exploration.ps1 -Action Batch -RunRoot '<returned-root>' -RequestsStdin
+'@
+& .\Invoke-Exploration.ps1 -Action Batch -RunRoot '<returned-root>' -RequestsJson $requests
 ~~~
 
-Set OutputEncoding each invocation; the literal here-string prevents testcase expansion. Do not create a separate file/wrapper per batch or pass arrays across powershell.exe -File. RequestsPath supports existing files; RequestsJson is for in-process callers such as the stream, avoiding native shell JSON quote loss. Raw CLI calls do not record exploration receipts.
+This uses the PowerShell process the tool already runs. It needs no OutputEncoding assignment, native pipe or nested powershell.exe; Auto still forwards to the reusable worker. The literal here-string prevents testcase expansion, and RequestsJson crosses no native argument boundary. Begin, RecordSteps, Status, Complete and help scripts should also be called directly. Do not create a separate file/wrapper per batch. Raw CLI calls do not record exploration receipts.
+
+Use the older UTF-8 native pipe only when the caller is not PowerShell or its execution policy blocks direct script invocation: `$OutputEncoding = [Text.UTF8Encoding]::new($false)` then pipe the literal JSON to `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-Exploration.ps1 -Action Batch -RunRoot '<root>' -RequestsStdin`. Never pass raw RequestsJson across powershell.exe -File; native quoting can corrupt it. RequestsPath supports existing files. Choose a shell tool's no-profile option when available; the framework cannot remove startup/profile time charged by the outer tool.
 
 Default Auto transport reuses one hidden local PowerShell host per RunRoot across these ordinary shell calls; no interactive session handle is needed. The current-user-only pipe processes requests sequentially, retains receipts/policy, and stops each batch at failure. The host exits after successful Complete or five idle minutes. StopHost stops only the transport and leaves exploration resumable. Transport InProcess runs directly for diagnosis or hosts that cannot retain background children. After framework/CLI updates, StopHost before resuming. A lost response has outcome unknown: inspect the GUI/Status before retrying, since the host may have performed the action.
 
@@ -50,16 +52,18 @@ Other actions: RecordSteps (requests array), Status, Complete and Quit. The same
 
 Compact output is default; full envelopes remain in logs/exploration-commands.jsonl. Each command returns its receipt and verification eligibility. Workflow appears on the final batch response/failure; follow missingSteps/nextAction. Full mode includes workflow on every response.
 
+The final Auto response includes explorationTiming.clientMs (entrypoint to host reply) and hostMs (worker validation, CLI and receipt work). logs/exploration-transport.jsonl also records connection time, PID and whether a host was started. Compare these with the shell tool's duration to locate time outside the framework. Tool duration includes outer shell startup/transport; it is not UI action time. Use tests/Measure-ExplorationLatency.ps1 for read-only direct/native-client measurements.
+
 Combine only needed help:
 
 ~~~powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ..\potato-cli\potato.ps1 help -Topics click,type,observe
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Get-RuntimeHelp.ps1 -Names Invoke-StepCommand,Assert-TextContains,Read-AGTAZipText
+& ..\potato-cli\potato.ps1 help -Topics click,type,observe
+& .\Get-RuntimeHelp.ps1 -Names Invoke-StepCommand,Assert-TextContains,Read-AGTAZipText
 ~~~
 
 ## Record reviewed evidence
 
-For RecordSteps use the same UTF-8 transport or stream:
+For RecordSteps use the same direct RequestsJson transport or stream:
 
 ~~~json
 [{"stepIndex":1,"route":"Performed GUI route","observedResult":"Actual complete expected result","verificationCommandIds":["<real-observation-receipt>"]}]
@@ -94,6 +98,8 @@ Runtime *Json values accept JSON strings, hashtables, ordered dictionaries or pa
 ## Discovery and typing
 
 Observe defaults to Compact. Bound scope/depth/count; deepen only when needed. DepthBoundaryReached/SearchIncomplete are not absence or uniqueness evidence. Try an observed subtree or visible-label fragment (select -Name '*fragment*' -TimeoutMs 0) before coordinates. Alternative observed names fit one SelectorJson Name array. Avoid repeated timed guesses and whole-tree dumps used as delays. Window-title waits inspect native top-level/owned windows instead of every desktop descendant.
+
+When only the current editor/filename field or focus is needed, start with scoped `observe -Depth 0 -MaxElements 1`: focusedElement and keyboardFocus still report the actual focused target without walking the whole dialog tree. Use its observed selector as a candidate; input still checks writability, uniqueness and live focus. Inspect a bounded tree only when additional controls/layout are needed. Avoid expanding file lists/ribbon trees to hundreds of nodes just to identify the focused field. Real startup, provider calls, literal typing and required stable-file waits can exceed one second; reduce avoidable host/discovery work rather than shortening correctness deadlines.
 
 Use minimal observed selectors and click Auto. Resolve AmbiguousTarget from candidates; do not choose the first duplicate or freeze opaque Pane roles. Native submit buttons use mouse activation to avoid synchronous UIA invocation errors. After ambiguous dispatch inspect the actual postcondition before retrying. Screenshots, UIA and clicks use physical pixels; inspect images and account for region origin.
 

@@ -23,6 +23,7 @@ try {
             $writer=[IO.StreamWriter]::new($pipe,$encoding,4096,$true);$writer.AutoFlush=$true
             $pending=$reader.ReadLineAsync()
             if (-not $pending.Wait(10000)) {throw 'Connected client did not provide a request.'}
+            $hostWatch=[Diagnostics.Stopwatch]::StartNew()
             $request=$pending.GetAwaiter().GetResult() | ConvertFrom-Json
             if ($request.stop -eq $true) {
                 $response=@{responses=@('{"ok":true,"hostStopped":true}');exitCode=0};$finish=$true
@@ -34,7 +35,8 @@ try {
                 $global:LASTEXITCODE=0
                 $dispatched=$true
                 $responses=@(& $entry @parameters)
-                $response=@{responses=$responses;exitCode=$LASTEXITCODE;hostProcessId=$PID}
+                $response=@{responses=$responses;exitCode=$LASTEXITCODE;hostProcessId=$PID;
+                    hostRequestMs=[Math]::Round($hostWatch.Elapsed.TotalMilliseconds,2)}
                 $finish=$parameters.Action -eq 'Complete' -and $LASTEXITCODE -eq 0
             }
             $writer.WriteLine((ConvertTo-Json -InputObject $response -Depth 10 -Compress))

@@ -20,8 +20,10 @@ param(
     [ValidateSet('Auto','InProcess')] [string]$Transport='Auto'
 )
 $ErrorActionPreference='Stop'
-if ([Console]::InputEncoding.CodePage -ne 65001) { [Console]::InputEncoding=New-Object Text.UTF8Encoding($false) }
-if ([Console]::OutputEncoding.CodePage -ne 65001) { [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false) }
+$global:LASTEXITCODE=0
+$requestWatch=[Diagnostics.Stopwatch]::StartNew()
+if ([Console]::InputEncoding.CodePage -ne 65001) { [Console]::InputEncoding=[Text.UTF8Encoding]::new($false) }
+if ([Console]::OutputEncoding.CodePage -ne 65001) { [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false) }
 function Read-Requests {
     if (@($RequestsStdin.IsPresent, [bool]$RequestsPath, [bool]$RequestsJson | Where-Object {$_}).Count -ne 1) { throw 'Provide exactly one of RequestsStdin, RequestsPath or RequestsJson.' }
     $raw=if ($RequestsStdin) { [Console]::In.ReadToEnd() } elseif ($RequestsPath) { Get-Content -LiteralPath $RequestsPath -Raw } else {$RequestsJson}
@@ -64,6 +66,25 @@ try {
             if ($RequestsJson) {throw 'Provide exactly one of RequestsStdin, RequestsPath or RequestsJson.'}
         }
         $response=Invoke-AGTAExplorationHost -RunRoot $RunRoot -Parameters $parameters -Stop:($Action -eq 'StopHost')
+        $clientMs=[Math]::Round($requestWatch.Elapsed.TotalMilliseconds,2)
+        if ($response.hostProcessId -and (Test-Path -LiteralPath (Join-Path $RunRoot 'logs'))) {
+            # Measure entrypoint to host reply, including receipts. Outer shell
+            # startup and the timing log/output below are outside this stopwatch.
+            $timing=[ordered]@{timestamp=[DateTime]::UtcNow.ToString('o');action=$Action;
+                clientMs=$clientMs;hostMs=$response.hostRequestMs;connectMs=$response.connectMs;
+                hostStarted=$response.hostStarted;hostProcessId=$response.hostProcessId;exitCode=$response.exitCode}
+            $timingLogError=$null
+            try {$timing | ConvertTo-Json -Compress | Add-Content -LiteralPath (Join-Path $RunRoot 'logs\exploration-transport.jsonl') -Encoding UTF8}
+            catch {$timingLogError=$_.Exception.Message}
+            if ($response.responses.Count) {
+                $last=$response.responses.Count-1
+                $final=$response.responses[$last] | ConvertFrom-Json
+                $metrics=@{clientMs=$clientMs;hostMs=$response.hostRequestMs}
+                if ($timingLogError) {$metrics.logError=$timingLogError}
+                $final | Add-Member -NotePropertyName explorationTiming -NotePropertyValue $metrics -Force
+                $response.responses[$last]=$final | ConvertTo-Json -Depth 80 -Compress
+            }
+        }
         foreach ($line in $response.responses) {$line}
         if ($response.exitCode -ne 0) {exit 1}
         return
@@ -86,7 +107,7 @@ try {
             if (-not $TestCaseCsv) { throw 'Begin requires TestCaseCsv.' }
             Initialize-AGTAExploration $RunRoot $TestCaseCsv $InteractionPolicy (Get-Item -LiteralPath $PotatoCliPath).FullName | Out-Null
             $result=@{ok=$true;runRoot=$RunRoot;explorationPath=$paths.manifest;explorationEvidenceRoot=$paths.evidenceRoot;steps=@(Import-Csv -LiteralPath $TestCaseCsv);
-                next='Keep this RunRoot. Default Auto transport reuses a local host across ordinary shell calls; pipe UTF-8 JSON to Batch -RequestsStdin. Interactive stdin can instead retain Invoke-ExplorationStream.ps1. Use explorationEvidenceRoot for full GUI paths and type PathKind. RecordSteps after reviewing each row; close owned windows, Complete, generate and replay. Use Transport InProcess for debugging; StopHost leaves exploration resumable.'}
+                next='Keep this RunRoot. In a PowerShell shell, call & .\Invoke-Exploration.ps1 -Action Batch -RunRoot <this-root> -RequestsJson <literal JSON string>. Auto reuses a host; no OutputEncoding assignment, native pipe or nested powershell.exe is needed. Interactive stdin can instead retain Invoke-ExplorationStream.ps1. Use explorationEvidenceRoot for full GUI paths and type PathKind. Review/RecordSteps, close owned windows, Complete, generate and replay. StopHost leaves exploration resumable.'}
         }
         { $_ -in @('Command','Batch') } {
             if ($m.completed) { throw 'Exploration is complete; no action was dispatched.' }

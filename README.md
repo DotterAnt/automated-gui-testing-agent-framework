@@ -1,10 +1,12 @@
 # Automated GUI Testing Agent Framework
 
-For CSV authoring, read `AGENTS.md`, `docs/AUTHORING.md`, the supplied CSV and the generated template together. Start exploration with the guide's process-safe JSON Batch entrypoint; it saves session configuration and returns compact observations. Use `RecordSteps` for reviewed receipts and `Status` for progress. `Complete` exports tested command routes for reuse. The template's `Invoke-AGTATestPlan` handles sequencing, dependent skips, cleanup and result output. The contract and source modules are references for specific unresolved questions.
+For CSV authoring, read `AGENTS.md`, `docs/AUTHORING.md`, the supplied CSV and the generated template together. In PowerShell shell tools, call `& .\Invoke-Exploration.ps1` directly with `-RequestsJson` for batches, rather than spawning another powershell.exe and piping encoded text. Auto retains the worker; direct invocation also avoids a cold client. Use `RecordSteps` for reviewed receipts and `Status` for progress. `Complete` exports tested command routes for reuse. The template's `Invoke-AGTATestPlan` handles sequencing, dependent skips, cleanup and result output. The contract and source modules are references for specific unresolved questions.
 
 PowerShell-only framework for turning CSV testcase descriptions into repeatable GUI automation scripts that use `potato-cli`.
 
 `Invoke-Exploration.ps1` defaults to Auto transport: a hidden local host stays warm across ordinary shell calls, using a current-user-only pipe and the existing CSV/policy/receipt checks. It exits after successful Complete or five idle minutes; StopHost leaves the walkthrough resumable. Transport InProcess runs directly for diagnosis. Interactive agents can instead keep `Invoke-ExplorationStream.ps1` open. Complete returns `replayReferencePath` for a small route reference. Replay stdout defaults to row status and actionable failures; full results and command transcripts stay on disk, with `-OutputMode Full` available on the test plan/completion helper. Generic `Read-AGTAZipText` verifies text/XML entries in an output archive without guessing its byte count. See the authoring guide for transport and dialog-wait examples.
+
+The final Auto response reports client/worker request timing, and `logs/exploration-transport.jsonl` records connection/startup/PID details. Run `tests/Measure-ExplorationLatency.ps1` for a read-only comparison of direct invocation and a native-pipe client. Outer shell-tool startup/transport is outside these measurements.
 
 [Watch the PoTATo demo recording](https://github.com/DottedAnt-Dooz/automated-gui-testing-agent-framework/releases/download/demo-v1/demo.mkv)
 
