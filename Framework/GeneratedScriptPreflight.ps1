@@ -6,7 +6,7 @@ function Get-AGTARuntimeHelp {
     $published = @(
         'Initialize-AGTAGeneratedTest', 'Invoke-RecordedStep', 'Invoke-StepCommand', 'Invoke-StepClick', 'Invoke-AGTATestPlan',
         'Assert-PotatoOk', 'Assert-PotatoFound', 'Assert-FileWait',
-        'Assert-ExpectedResult', 'Assert-TextContains', 'Read-AGTAArtifactBytes', 'Read-AGTAZipText', 'Assert-ArtifactPrefix',
+        'Assert-ExpectedResult', 'Assert-TextContains', 'Read-AGTAArtifactBytes', 'Read-AGTAZipText', 'Assert-ZipTextContains', 'Assert-ArtifactPrefix',
         'Invoke-EvidenceScreenshot', 'Add-EvidencePath', 'Register-OpenedProcess',
         'Register-CreatedExternalPath', 'Invoke-TestCleanup',
         'Complete-AGTAGeneratedTest', 'Get-AGTATestExitCode',
@@ -33,7 +33,9 @@ function Get-AGTARuntimeHelp {
             parameterConstraints = $constraints
             note = switch ($helper) {
                 Read-AGTAArtifactBytes {'Count is an exact byte count, not a maximum or whole-file read. Use Read-AGTAZipText for archive text.'}
-                Read-AGTAZipText {'Read-only text/XML entries selected by wildcard names. MaxBytes limits total uncompressed content; assert the returned content separately.'}
+                Read-AGTAZipText {'Returns an array of {name,text} entries, not a CLI result. MaxBytes limits total uncompressed content. Use Assert-ZipTextContains for raw archive text, or assert entry.text explicitly; do not pass entries to Assert-TextContains.'}
+                Assert-ZipTextContains {'Reads actual matching ZIP entries and asserts raw text fragments with ordinal comparison and normalized CR/LF. Optional ExpectedEntryCount asserts cardinality. XML entities are not decoded; use a read-only parser for semantic XML assertions.'}
+                Assert-TextContains {'Result must be a successful CLI read/read-pdf envelope with content provenance. For archive entries use Assert-ZipTextContains; plain strings and {name,text} objects are not CLI results.'}
                 Invoke-StepCommand {'*Json option values may be strings or objects; objects are serialized before CLI invocation.'}
                 default {$null}
             }

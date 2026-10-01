@@ -41,13 +41,25 @@ try {
         foreach ($name in @('content/part1.xml','content/part2.xml','other.xml')) {
             $entry=$archive.CreateEntry($name)
             $writer=New-Object IO.StreamWriter($entry.Open(),[Text.UTF8Encoding]::new($false))
-            try {$writer.Write('<text>Test '+[char]0x151+'</text>')} finally {$writer.Dispose()}
+            try {$writer.Write('<text>Test '+[char]0x151+"</text>`r`nLine")} finally {$writer.Dispose()}
         }
     } finally {$archive.Dispose();$stream.Dispose()}
     # Writer holding the file is the common archive verification failure.
     $held=[IO.File]::Open($zip,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)
     try {$entries=@(Read-AGTAZipText $zip -EntryPattern 'content/*.xml' -TimeoutMs 0)} finally {$held.Dispose()}
     Check ($entries.Count -eq 2 -and $entries[0].text.Contains([string][char]0x151)) 'Shared ZIP text verification lost entries or Unicode.'
+    $script:AGTAStepAssertions=@()
+    Assert-ZipTextContains $zip -EntryPattern 'content/*.xml' -Expected ('Test '+[char]0x151) -ExpectedEntryCount 2 -TimeoutMs 0
+    Check ($script:AGTAStepAssertions.Count -eq 2 -and -not @($script:AGTAStepAssertions | Where-Object {-not $_.passed}).Count) 'ZIP assertion did not record actual content and cardinality.'
+    Reject {Assert-ZipTextContains $zip -EntryPattern 'content/*.xml' -Expected 'Test' -ExpectedEntryCount 1 -TimeoutMs 0} 'ZIP assertion accepted the wrong entry count.' | Out-Null
+    Reject {Assert-ZipTextContains $zip -EntryPattern 'content/*.xml' -Expected 'Absent' -TimeoutMs 0} 'ZIP assertion accepted missing content.' | Out-Null
+    Reject {Assert-ZipTextContains $zip -EntryPattern 'content/*.xml' -Expected 'test' -TimeoutMs 0} 'ZIP assertion lost ordinal case sensitivity.' | Out-Null
+    Assert-ZipTextContains $zip -EntryPattern 'content/part1.xml' -Expected "</text>`nLine" -TimeoutMs 0
+    Check $script:AGTAStepAssertions[-1].passed 'ZIP assertion failed CR/LF normalization.'
+    Reject {Assert-ZipTextContains $zip -EntryPattern 'content/*.xml' -Expected "Line`n<text>" -TimeoutMs 0} 'ZIP assertion fabricated a fragment across entry boundaries.' | Out-Null
+    Reject {Assert-ZipTextContains $zip -EntryPattern 'missing.xml' -Expected 'Test' -TimeoutMs 0} 'ZIP assertion accepted a missing entry.' | Out-Null
+    Reject {Assert-ZipTextContains $zip -EntryPattern 'content/*.xml' -Expected 'Test' -MaxBytes 10 -TimeoutMs 0} 'ZIP assertion bypassed the read bound.' | Out-Null
+    Reject {Assert-TextContains -Result $entries[0] -Expected 'Test'} 'Archive convenience weakened CLI content provenance.' | Out-Null
     Reject {Read-AGTAZipText $zip -EntryPattern '*.xml' -MaxBytes 10 -TimeoutMs 1000} 'Archive byte limit was bypassed.' | Out-Null
     Reject {Read-AGTAZipText $zip -EntryPattern 'missing.xml' -TimeoutMs 0} 'Missing archive entry pretended to verify content.' | Out-Null
     $invalid=Join-Path $root 'invalid.zip'
@@ -68,6 +80,8 @@ try {
     Check ($compact.steps[0].failedCommands.Count -eq 0 -and -not $compact.steps[0].Contains('commands')) 'Compact output repeated successful command transcripts.'
     $help=Get-AGTARuntimeHelp Read-AGTAZipText
     Check ($help.available -and $help.syntax -match 'EntryPattern') 'Generic ZIP reader is missing from targeted help.'
+    $help=Get-AGTARuntimeHelp Assert-ZipTextContains
+    Check ($help.available -and $help.syntax -match 'ExpectedEntryCount' -and $help.note -match 'raw text') 'Generic ZIP assertion is missing from targeted help.'
     $help=Get-AGTARuntimeHelp Read-AGTAArtifactBytes
     Check ($help.parameterConstraints.Count.maximum -eq 1048576 -and $help.note -match 'exact byte count') 'Artifact help hid exact-length semantics or validation bounds.'
     $csv=Join-Path $root 'case.csv'

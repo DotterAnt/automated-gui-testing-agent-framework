@@ -105,3 +105,27 @@ function Read-AGTAZipText {
         Start-Sleep -Milliseconds ([int][Math]::Max(1,[Math]::Min(100,$TimeoutMs-$watch.ElapsedMilliseconds)))
     } while ($true)
 }
+
+function Assert-ZipTextContains {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string[]]$EntryPattern,
+        [Parameter(Mandatory)] [string[]]$Expected,
+        [ValidateRange(1,2147483647)] [int]$ExpectedEntryCount,
+        [ValidateRange(1,16777216)] [int]$MaxBytes=1048576,
+        [ValidateRange(0,60000)] [int]$TimeoutMs=2000,
+        [string]$Message='Archive text must contain every expected fragment.')
+    if (-not $Expected.Count -or @($Expected | Where-Object {[string]::IsNullOrWhiteSpace($_)}).Count) { throw 'Expected text fragments must not be empty.' }
+    try { $entries=@(Read-AGTAZipText -Path $Path -EntryPattern $EntryPattern -MaxBytes $MaxBytes -TimeoutMs $TimeoutMs) }
+    catch { Assert-ExpectedResult -Condition $false -Message "$Message $($_.Exception.Message)"; return }
+    if ($PSBoundParameters.ContainsKey('ExpectedEntryCount')) {
+        Assert-ExpectedResult -Condition ($entries.Count -eq $ExpectedEntryCount) -Message "$Message Expected $ExpectedEntryCount matching entries, found $($entries.Count)."
+    }
+    # Match within an actual entry, never a fragment fabricated across boundaries.
+    $texts=@($entries | ForEach-Object {([string]$_.text).Replace("`r`n","`n").Replace("`r","`n")})
+    foreach ($fragment in $Expected) {
+        $normalized=$fragment.Replace("`r`n","`n").Replace("`r","`n")
+        $found=@($texts | Where-Object {$_.IndexOf($normalized,[StringComparison]::Ordinal) -ge 0}).Count -gt 0
+        Assert-ExpectedResult -Condition $found -Message "$Message Missing fragment: $fragment"
+    }
+}

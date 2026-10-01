@@ -39,6 +39,7 @@ Do not copy universal boilerplate into each generated script. The framework runt
 - `Assert-PotatoOk`, `Assert-PotatoFound`, and `Assert-FileWait`
 - `Assert-ExpectedResult -Condition <bool> -Message <expected postcondition>`
 - `Assert-TextContains -Result <read/read-pdf result> -Expected <string[]>`: verifies every content fragment, normalizing CR/LF; rejects read results whose source is only the element Name. Use after GUI reopening when the CSV requires persisted content.
+- `Assert-ZipTextContains -Path <artifact> -EntryPattern <string[]> -Expected <string[]> [-ExpectedEntryCount <count>]`: verifies raw text within actual matching ZIP entries with bounded shared reads and records assertions. XML entities are not decoded. `Read-AGTAZipText` returns `{name,text}` entries for custom parsing; these are not CLI read results.
 - `Invoke-EvidenceScreenshot` and `Add-EvidencePath`
 - `Register-OpenedProcess -StartResult $started` and `Register-CreatedExternalPath`
 - `Invoke-TestCleanup`
@@ -87,7 +88,7 @@ User/testcase interaction constraints override every fallback preference. A forb
 
 Start with CLI `help -Topic <command>` and the template. Keep desktop commands sequential. Use targeted queries before repeating broad `observe` calls. `select` queries elements; it does not select a dropdown item. A missing popup item may require opening its parent first. Use `click -Method Mouse` when exploration shows UIA Invoke does not cause the expected transition; observe before retrying a possibly completed action.
 
-`type` accepts literal text and never uses the clipboard. `-Verify` reads UIA text without resending input. `-PreDelete` defaults to TextPattern or standard Windows Edit selection plus keyboard Backspace; `-ClearMethod Shortcut` explicitly uses Ctrl+A and may only be used when permitted. Report an unsupported read/selection rather than silently substituting another route. `verified: null` means verification was not requested.
+`type` accepts literal text and never uses the clipboard. `-Verify` reads UIA text without resending input. `-PreDelete` skips clearing when actual text readback proves the field empty; otherwise it uses TextPattern or standard Windows Edit selection plus keyboard Backspace; `-ClearMethod Shortcut` explicitly uses Ctrl+A and may only be used when permitted. Report an unsupported read/selection rather than silently substituting another route. `verified: null` means verification was not requested.
 
 Use unique execution paths and `wait-file -MinBytes 1 -StableMs 500` before inspecting asynchronous output. Assert `conditionMet`, then validate required format/content; stability alone is not correctness. Before a GUI run, parse the script and validate paths/CSV. Compute path defaults in the body and avoid PowerShell automatic variable names. Preserve failed attempts for analysis.
 

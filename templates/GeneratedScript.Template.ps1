@@ -7,7 +7,8 @@ param(
     [string] $ExplorationPath,
     [ValidateSet('VisibleControls','GuiNavigation','AllowShortcuts')] [string] $InteractionPolicy = 'GuiNavigation',
     [string] $PolicyReason,
-    [ValidateSet('InProcess','Process')] [string] $Transport = 'InProcess'
+    [ValidateSet('InProcess','Process')] [string] $Transport = 'InProcess',
+    [ValidateSet('Compact','Full')] [string] $OutputMode = 'Compact'
 )
 
 $runtimeCandidates = @()
@@ -48,5 +49,5 @@ $StepBodies = @(
     # }
     # Add each remaining row with its tested GUI route and expected-result assertion.
 )
-Invoke-AGTATestPlan -StepBodies $StepBodies
+Invoke-AGTATestPlan -StepBodies $StepBodies -OutputMode $OutputMode
 exit (Get-AGTATestExitCode)

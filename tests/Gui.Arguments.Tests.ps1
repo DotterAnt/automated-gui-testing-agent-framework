@@ -32,12 +32,19 @@ try {
     $commands=@()
     $ready=Invoke-StepCommand ([ref]$commands) windows @('-Foreground','-WindowTitle',$title,'-TimeoutMs','1000')
     $guard=$ready.data.foregroundSelector
+    $rootWait=Invoke-StepCommand ([ref]$commands) wait-element @('-Scope','ForegroundWindow','-WindowSelectorJson',$guard,
+        '-FallbackReason','Actual generic fixture dialog','-FallbackEvidence',$responses[1].explorationCommandId,
+        '-Name',$title,'-TimeoutMs','1000')
+    Check ($rootWait.ok -and $rootWait.data.exists -and $rootWait.data.elements[0].name -eq $title) 'A name-only presence wait missed the actual guarded window root.'
     $path=Join-Path $root 'saved file.docx'
+    $firstType=$true
     foreach ($value in @($guard,($guard | ConvertTo-Json -Compress))) {
         $typed=Invoke-StepCommand ([ref]$commands) type @('-Scope','ForegroundWindow','-WindowSelectorJson',$value,
             '-FallbackReason','Actual generic fixture dialog','-FallbackEvidence',$responses[1].explorationCommandId,
             '-AutomationId','Filename','-Text',$path,'-PathKind','SaveFile','-PreDelete','-Verify','-TimeoutMs','1000')
         Check ($typed.ok -and $typed.data.verified) 'Actual replay typing failed with a wrapped path or object/string guard.'
+        Check ($typed.data.clearMethod -eq $(if ($firstType) {'AlreadyEmpty'} else {'Selection'})) 'Replacement did not skip an empty field or select nonempty text.'
+        $firstType=$false
     }
     $wrong=[ordered]@{Name='Unrelated fixture';ClassName=$guard.ClassName;ProcessId=$guard.ProcessId}
     $blocked=Invoke-StepCommand ([ref]$commands) type @('-Scope','ForegroundWindow','-WindowSelectorJson',$wrong,
