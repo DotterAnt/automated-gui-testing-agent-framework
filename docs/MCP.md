@@ -18,7 +18,7 @@ Codex documents stdio servers and the shared desktop/CLI/IDE configuration in [i
 
 ## Authoring flow
 
-Prefer these tools when available. Call `agta_help` with `{"topic":"authoring","testCaseCsv":"<absolute supplied CSV path>"}` to read the guide, template and CSV together. Then:
+Prefer these tools when available. Call `agta_help` with `{"topic":"authoring","testCaseCsv":"<absolute supplied CSV path>"}` to read the guide, template and CSV together once; do not duplicate those reads through shell calls. Guide/template are plain strings without PowerShell provider metadata. Then:
 
 ~~~json
 {"action":"Begin","runRoot":"<unique absolute run folder>","testCaseCsv":"<absolute supplied CSV path>"}
@@ -33,6 +33,8 @@ Pass these arguments to `agta_explore`; keep its returned runRoot and exploratio
 Batch at most 20 known sequential commands and stop at an observation for unknown transitions. Keep desktop tool calls sequential. Real failure receipts are returned with MCP `isError`; the server remains alive for diagnosis. After a failed batch, further batches for that run are blocked until a successful `Status` request. Review the failed receipt and actual GUI before submitting a separate recovery request. This does not retry or resume queued commands automatically. If the client loses a response, inspect Status/GUI before retrying an action that may already have happened.
 
 Use `RecordSteps` with requests containing stepIndex, route, observedResult and real verificationCommandIds. `Status` and `Complete` need only action/runRoot. Complete still requires all verified rows and cleanup of owned windows; it returns replay references. Finish generation and actual replay using the normal runtime contract. The MCP process can serve another unique run afterward; EOF/client shutdown ends it. Restart it after framework updates. Use one transport per active walkthrough and do not submit shell and MCP mutations concurrently.
+
+For closure, use a Batch windows command with the exact owned WindowIdentityJson/tested selector, WaitForNotExists and a bounded TimeoutMs; assert data.conditionMet. Confirmed disappearance is eligible evidence. Plain windows with a positive TimeoutMs waits for appearance, so count 0 after a close wastes the deadline and is ineligible. Every ID in RecordSteps must be eligible.
 
 Targeted signatures: `agta_help` with `{"topic":"cli","names":["type","observe"]}` or `{"topic":"runtime","names":["Invoke-StepCommand","Assert-TextContains"]}`. Do not read entire contracts/modules or unrelated testcase examples speculatively. The shell/direct and interactive stream transports remain available when MCP tools are unavailable.
 

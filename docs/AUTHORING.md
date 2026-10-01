@@ -1,6 +1,6 @@
 # Authoring entry point
 
-Read this guide, the supplied CSV and templates/GeneratedScript.Template.ps1 together. Use targeted help for missing signatures. The full contract/source are references for concrete unresolved questions.
+Read this guide, the supplied CSV and templates/GeneratedScript.Template.ps1 together once. Prefer agta_help topic authoring when available; do not repeat the same context through shell reads and MCP. Use targeted help for missing signatures. The full contract/source are references for concrete unresolved questions.
 
 If `agta_explore`/`agta_help` MCP tools are available, prefer them: `agta_help` topic authoring with testCaseCsv returns this guide, template and supplied CSV together; `agta_explore` accepts Begin/Batch/RecordSteps/Status/Complete as structured arguments. Keep desktop requests sequential and use the same verification/cleanup workflow below. The persistent process avoids outer shell/client startup per request. After a failed batch, inspect Status/GUI before recovery. See `docs/MCP.md` for one-time setup. The shell examples below apply when MCP is unavailable.
 
@@ -71,9 +71,11 @@ For RecordSteps use the same direct RequestsJson transport or stream:
 [{"stepIndex":1,"route":"Performed GUI route","observedResult":"Actual complete expected result","verificationCommandIds":["<real-observation-receipt>"]}]
 ~~~
 
-Use actual IDs from that row; multiple receipts support compound expectations. Read verification.eligible and review whether the observations prove the entire expectation. Dispatch alone is insufficient. type -Verify proves current text, not saving/persistence. A title proves window state, not contents. Screenshot evidence needs visual inspection.
+Use actual IDs from that row; every supplied verification ID must have verification.eligible true. Multiple receipts support compound expectations. Review whether the observations prove the entire expectation. Dispatch alone is insufficient. type -Verify proves current text, not saving/persistence. A title proves window state, not contents. Screenshot evidence needs visual inspection.
 
 Status returns missing rows, failures and ownership receipts. Close exploration-owned windows through the GUI and verify exit before Complete. Complete seals the manifest and returns replayReferencePath (compact tested actions/guards/verification references) and routesPath (full discovery history). Read the small reference first. Successful recovery may still start from a wrong state: omit unnecessary second drags/mode switches and revalidate the corrected route. Do not add untested selector constraints during generation.
+
+After closing, verify `windows -WindowIdentityJson <ownedWindow> -WaitForNotExists -TimeoutMs 5000` (or the tested explicit window selector). This returns immediately when gone; assert data.conditionMet. A successful explicit absence wait is eligible evidence. Ordinary windows with TimeoutMs waits for appearance: count 0 after expiry is ineligible and wastes the full deadline after a close.
 
 ## Ownership and dialogs
 
@@ -81,7 +83,7 @@ Start defaults to RequireNewWindow: existing hosts are allowed; old windows are 
 
 Before a file-manager GUI Open/double-click that launches another app: windows -Checkpoint, perform the action, inspect the observed unique window, then focus -SinceCheckpoint <checkpointId> with that selector. Only a new window gets ownedWindow for scoped cleanup. Direct file/protocol/shell launches bypass the GUI route.
 
-Owned dialogs prefer Scope FocusedWindow. Broker dialogs need their exact observed title/class guard and fallback evidence. After submit, windows -Foreground -WindowTitle '<tested dialog title>' -TimeoutMs 15000 waits for that foreground title and returns count 0 on timeout. Assert count before using foregroundSelector. Bare windows -Foreground is a snapshot, not a transition check. Do not filter by the main app's PID; a broker may use another process.
+Owned dialogs prefer Scope FocusedWindow. Broker dialogs need their exact observed title/class guard and fallback evidence. After submit, windows -Foreground -WindowTitle '<tested dialog title>' -TimeoutMs 15000 waits for that foreground title and returns count 0 on timeout. Assert count before passing its actual foregroundSelector as WindowSelectorJson in the next request. End the batch at windows when that guard is not yet known; an unguarded ForegroundWindow observation in the same batch fails. Bare windows -Foreground is a snapshot, not a transition check. Do not filter by the main app's PID; a broker may use another process. After saving, inspect the actual title; do not append an assumed filename extension in a timed wait.
 
 A complete replay guard pattern is:
 
@@ -102,6 +104,8 @@ Runtime *Json values accept JSON strings, hashtables, ordered dictionaries or pa
 Observe defaults to Compact. Bound scope/depth/count; deepen only when needed. DepthBoundaryReached/SearchIncomplete are not absence or uniqueness evidence. Try an observed subtree or visible-label fragment (select -Name '*fragment*' -TimeoutMs 0) before coordinates. Alternative observed names fit one SelectorJson Name array. Avoid repeated timed guesses and whole-tree dumps used as delays. Window-title waits inspect native top-level/owned windows instead of every desktop descendant.
 
 When only the current editor/filename field or focus is needed, start with scoped `observe -Depth 0 -MaxElements 1`: focusedElement and keyboardFocus still report the actual focused target without walking the whole dialog tree. Use its observed selector as a candidate; input still checks writability, uniqueness and live focus. Inspect a bounded tree only when additional controls/layout are needed. Avoid expanding file lists/ribbon trees to hundreds of nodes just to identify the focused field. Real startup, provider calls, literal typing and required stable-file waits can exceed one second; reduce avoidable host/discovery work rather than shortening correctness deadlines.
+
+The focusedElement can be outside the depth-bounded elements list. For positive assertions, inspect root/focusedElement as well as elements or use a tested targeted select/wait. Do not infer absence from a shallow list or add an untested role constraint. SelectorJson supports observed AutomationId/ClassName as well as Name; an internal ID/class is not a visible Name. Use PathJson for an observed container when discovery reports SearchIncomplete.
 
 Use minimal observed selectors and click Auto. Resolve AmbiguousTarget from candidates; do not choose the first duplicate or freeze opaque Pane roles. Native submit buttons use mouse activation to avoid synchronous UIA invocation errors. After ambiguous dispatch inspect the actual postcondition before retrying. Screenshots, UIA and clicks use physical pixels; inspect images and account for region origin.
 

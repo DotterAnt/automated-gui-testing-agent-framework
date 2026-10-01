@@ -60,6 +60,7 @@ try {
     Check (-not $response.result.isError -and (Values $response)[0].explorationCommandId -and ($receipt.arguments[3] | ConvertFrom-Json).Name -ceq $unicode) 'MCP changed Unicode/structured guards or lost a real receipt.'
     $response=Tool @{action='Batch';runRoot=$run;requests=@(@{stepIndex=1;command='help';arguments=@('-Topic','missing')},@{stepIndex=1;command='help';arguments=@('-Topic','click')})}
     Check ($response.result.isError -and @(Values $response).Count -eq 1 -and (Get-Content -LiteralPath (Join-Path $run 'logs\exploration-commands.jsonl')).Count -eq 2) "MCP continued a failed batch or lost its failure receipt: $($response | ConvertTo-Json -Depth 7 -Compress)"
+    Check ((Values $response)[0].workflow.nextAction -match 'action Status') 'Failed MCP batch did not describe its mandatory review action.'
     $response=Tool @{action='Batch';runRoot=$run;requests=@(@{stepIndex=1;command='help';arguments=@('-Topic','click')})}
     Check ($response.result.isError -and (Values $response)[0].error -match 'Call Status' -and (Get-Content -LiteralPath (Join-Path $run 'logs\exploration-commands.jsonl')).Count -eq 2) 'MCP dispatched an unchecked batch after failure.'
     $response=Tool @{action='Status';runRoot=$run}
@@ -88,7 +89,9 @@ try {
     $help=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='cli';names=@('type')}}
     Check (-not $help.result.isError -and $help.result.content[0].text -match 'PathKind') 'Targeted CLI help failed.'
     $help=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='authoring';testCaseCsv=$csv}}
-    Check (-not $help.result.isError -and (Values $help)[0].guide -and (Values $help)[0].template -and (Values $help)[0].steps[0].Action -eq 'Fixture') 'Authoring guide/template/CSV context failed.'
+    $authoring=(Values $help)[0]
+    Check (-not $help.result.isError -and $authoring.guide -is [string] -and $authoring.template -is [string] -and $authoring.steps[0].Action -eq 'Fixture') 'Authoring guide/template/CSV context failed or serialized provider metadata instead of strings.'
+    Check ($authoring.guide -ceq [IO.File]::ReadAllText((Join-Path $frameworkRoot 'docs\AUTHORING.md')) -and $authoring.template -ceq [IO.File]::ReadAllText((Join-Path $frameworkRoot 'templates\GeneratedScript.Template.ps1'))) 'MCP changed authoring source content.'
     $response=Rpc 'tools/call' @{name='agta_explore';arguments=@{action='Status';runRoot=$run;Transport='Process'}}
     Check ($response.result.isError -and (Values $response)[0].error -match 'Unknown') 'MCP accepted an unvalidated transport override.'
     $server.StandardInput.WriteLine('{');$server.StandardInput.Flush()
@@ -106,6 +109,9 @@ try {
             @{stepIndex=1;command='windows';arguments=@('-Foreground','-WindowTitle',$title,'-TimeoutMs','3000')})}
         $ready=(Values $response)[-1]
         Check (-not $response.result.isError -and $ready.data.count -eq 1) 'MCP could not establish real fixture foreground readiness.'
+        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='windows';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title,'-WaitForNotExists','-TimeoutMs','0')})}
+        Check ($response.result.isError -and -not (Values $response)[0].data.conditionMet -and -not (Values $response)[0].verification.eligible) 'A real open window passed MCP disappearance evidence.'
+        Tool @{action='Status';runRoot=$guiRun} | Out-Null
         $scope=@('-Scope','ForegroundWindow','-WindowSelectorJson',$ready.data.foregroundSelector,'-FallbackReason','Actual generic MCP fixture','-FallbackEvidence',$ready.explorationCommandId)
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='observe';arguments=$scope+@('-Depth','0','-MaxElements','1')})}
         Check (-not $response.result.isError -and (Values $response)[0].data.focusedElement.id -eq 'Filename') 'MCP focus-only observation lost the actual field.'
@@ -123,8 +129,11 @@ try {
         Check (-not $response.result.isError -and $read.data.text -ceq $path) 'Rejected MCP input changed the real field.'
         $response=Tool @{action='RecordSteps';runRoot=$guiRun;requests=@(@{stepIndex=1;route='Focused observed fixture, typed and read literal filename';observedResult='Actual Unicode path read back';verificationCommandIds=@($typed.explorationCommandId,$read.explorationCommandId)})}
         Check (-not $response.result.isError) 'MCP could not record actual GUI verification receipts.'
-        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='close-window';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title,'-TimeoutMs','5000')})}
-        Check (-not $response.result.isError -and $child.WaitForExit(3000)) 'MCP did not close its exact fixture window.'
+        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
+            @{stepIndex=1;command='close-window';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title,'-TimeoutMs','5000')},
+            @{stepIndex=1;command='windows';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title,'-WaitForNotExists','-TimeoutMs','5000')})}
+        $gone=(Values $response)[-1]
+        Check (-not $response.result.isError -and $gone.data.conditionMet -and $gone.verification.eligible -and $gone.durationMs -lt 4000 -and $child.WaitForExit(3000)) 'MCP did not promptly verify its real fixture disappearance.'
         $response=Tool @{action='Complete';runRoot=$guiRun}
         Check (-not $response.result.isError -and (Values $response)[0].replayReferencePath) 'MCP did not complete the actual GUI fixture.'
     }
@@ -154,7 +163,7 @@ try {
     }
     $server.StandardInput.Close()
     Check ($server.WaitForExit(5000) -and $server.ExitCode -eq 0) 'EOF left an MCP worker running.'
-    $result=@{checks=$script:checks;gui=[bool]$Gui;samples=$samples;serverProcessId=$server.Id;powershell=$PSVersionTable.PSVersion.ToString();
+    $result=@{checks=$script:checks;gui=[bool]$Gui;guiDisappearanceMs=$(if ($Gui) {$gone.durationMs});samples=$samples;serverProcessId=$server.Id;powershell=$PSVersionTable.PSVersion.ToString();
         note='Sequential real read-only state receipts. MCP uses one persistent PS5 process; FreshShellDirect creates a NoProfile PS5 caller and reuses the Auto worker. Excludes external agent/tool transport and one-time initialization.'}
     if ($OutFile) {$result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $OutFile -Encoding UTF8}
     $result | ConvertTo-Json -Depth 6 -Compress

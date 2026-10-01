@@ -1,6 +1,6 @@
 # Agent instructions
 
-Read `docs/AUTHORING.md`, the supplied CSV and `templates/GeneratedScript.Template.ps1` together first. Use targeted CLI/runtime help for missing signatures; do not load whole modules, the full contract, old examples or unrelated testcases speculatively.
+First load the guide/template/CSV once: use `agta_help` topic `authoring` with the supplied `testCaseCsv` when MCP tools are available; otherwise read `docs/AUTHORING.md`, the supplied CSV and `templates/GeneratedScript.Template.ps1` together through the shell. Do not repeat the context through both transports. Use targeted CLI/runtime help for missing signatures; do not load whole modules, the full contract, old examples or unrelated testcases speculatively.
 
 When agta_explore/agta_help MCP tools are available, prefer them for exploration and targeted help: agta_help topic authoring with the supplied testCaseCsv returns the guide/template/CSV together. Begin once, reuse its runRoot, Batch known routes, RecordSteps, Status and Complete through agta_explore. Keep desktop calls sequential. After a failed batch, inspect Status/GUI before a recovery batch. These tools preserve the same checks/receipts and avoid a fresh shell/client per request. See docs/MCP.md for one-time setup. Use the direct shell route below when MCP is unavailable; request login=false/no-profile at the shell-tool level when supported.
 

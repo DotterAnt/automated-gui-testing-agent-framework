@@ -81,7 +81,10 @@ function Assert-AGTAExplorationVerification {
     if ($v.command -notin @('read','select','windows','observe','wait-element','wait-file','read-pdf','screenshot')) { throw 'Verification needs a successful observation command or verified typing, not just action dispatch.' }
     if (($v.command -eq 'wait-element' -and -not $v.result.data.exists) -or
         ($v.command -eq 'wait-file' -and -not $v.result.data.conditionMet) -or
-        ($v.command -in @('select','windows') -and $v.result.data.count -le 0)) { throw 'The recorded observation did not meet its postcondition.' }
+        ($v.command -eq 'select' -and $v.result.data.count -le 0) -or
+        ($v.command -eq 'windows' -and $(if ($v.result.data.waitForNotExists) {
+            $v.result.data.conditionMet -ne $true -or $v.result.data.count -ne 0
+        } else {$v.result.data.count -le 0}))) { throw 'The recorded observation did not meet its postcondition.' }
     if ($v.command -eq 'screenshot' -and -not (Test-Path -LiteralPath $v.result.data.path -PathType Leaf)) { throw 'Screenshot evidence is missing.' }
 }
 
@@ -164,6 +167,7 @@ function Test-AGTAExplorationCommandSucceeded {
     param($Result, [string]$Command)
     return [bool]($Result.ok -and -not (
         ($Command -eq 'wait-element' -and -not $Result.data.exists) -or
+        ($Command -eq 'windows' -and $Result.data.waitForNotExists -and ($Result.data.conditionMet -ne $true -or $Result.data.count -ne 0)) -or
         ($Command -eq 'wait-file' -and -not $Result.data.conditionMet)))
 }
 

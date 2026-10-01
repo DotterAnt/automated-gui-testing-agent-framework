@@ -8,6 +8,13 @@ $script:checks=0
 function Check($condition,$message) {if (-not $condition) {throw $message};$script:checks++}
 function Reject([scriptblock]$body,$message) {$failure=$null;try {& $body | Out-Null} catch {$failure=$_};Check ([bool]$failure) $message;return $failure}
 try {
+    $absent=@{command='windows';result=@{ok=$true;data=@{count=0;waitForNotExists=$true;conditionMet=$true}}}
+    Check (Get-AGTAExplorationVerificationInfo $absent).eligible 'Explicit confirmed window absence was rejected as row evidence.'
+    Check (Test-AGTAExplorationCommandSucceeded $absent.result windows) 'Confirmed disappearance failed batch success validation.'
+    $present=@{command='windows';result=@{ok=$true;data=@{count=1;waitForNotExists=$true;conditionMet=$false}}}
+    Check (-not (Get-AGTAExplorationVerificationInfo $present).eligible -and -not (Test-AGTAExplorationCommandSucceeded $present.result windows)) 'Unmet disappearance wait passed evidence or batch validation.'
+    Check (-not (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=0}}}).eligible) 'Legacy empty appearance snapshot became verified absence.'
+    Check (-not (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=1;waitForNotExists=$true;conditionMet=$true}}}).eligible) 'Contradictory absence/count evidence was accepted.'
     $guard=[ordered]@{Name='Observed dialog';ClassName='#32770';ProcessId=123}
     $values=@(Resolve-AGTACommandArguments click @('-WindowSelectorJson',$guard,'-Name','Submit'))
     $parsed=$values[1] | ConvertFrom-Json

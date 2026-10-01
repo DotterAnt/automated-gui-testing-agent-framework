@@ -10,7 +10,7 @@ $ready=$false
 $negotiated=$false
 $reviewRequired=@{}
 $tools=@(
-    @{name='agta_explore';description='Recorded GUI exploration in a persistent process. Begin once with a unique absolute runRoot/testCaseCsv. Batch up to 20 known sequential commands, ending at an observation for unknown transitions. RecordSteps only after reviewing real verification receipts. Close owned windows before Complete. A failed batch stops; inspect the outcome before a separate recovery request.';
+    @{name='agta_explore';description='Recorded GUI exploration in a persistent process. Begin once with a unique absolute runRoot/testCaseCsv. Batch up to 20 known sequential commands, ending at an observation for unknown transitions. RecordSteps only with verification.eligible receipts after reviewing them. Close owned windows before Complete. After a failed Batch, call Status and inspect the outcome before a separate recovery Batch.';
         inputSchema=@{type='object';required=@('action','runRoot');additionalProperties=$false;properties=@{
             action=@{type='string';enum=@('Begin','Batch','RecordSteps','Status','Complete')};runRoot=@{type='string'};
             testCaseCsv=@{type='string'};potatoCliPath=@{type='string'};
@@ -49,8 +49,10 @@ function Invoke-McpTool($Name,$Arguments) {
     } elseif ($Name -eq 'agta_help') {
         foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin @('topic','names','testCaseCsv')) {throw "Unknown help argument: $property"}}
         if ($Arguments.topic -eq 'authoring') {
-            $context=@{guide=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'docs\AUTHORING.md') -Raw;
-                template=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'templates\GeneratedScript.Template.ps1') -Raw}
+            # Get-Content strings carry provider metadata in PS5. ConvertTo-Json
+            # can serialize their PSDrive/.NET object graph instead of plain text.
+            $context=@{guide=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'docs\AUTHORING.md'));
+                template=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'templates\GeneratedScript.Template.ps1'))}
             if ($Arguments.testCaseCsv) {$context.steps=@(Import-Csv -LiteralPath $Arguments.testCaseCsv)}
             $responses=@(($context | ConvertTo-Json -Depth 5 -Compress))
         } elseif ($Arguments.topic -in @('cli','runtime')) {
@@ -65,6 +67,9 @@ function Invoke-McpTool($Name,$Arguments) {
     $last=$responses.Count-1
     $final=$responses[$last] | ConvertFrom-Json
     if ($final -is [pscustomobject]) {
+        if ($Name -eq 'agta_explore' -and $Arguments.action -eq 'Batch' -and $failed -and $final.workflow) {
+            $final.workflow.nextAction='Call agta_explore with action Status on this runRoot, inspect the failed receipt and actual GUI, then submit one observed recovery Batch. Do not repeat uncertain input or skip unfinished rows.'
+        }
         $final | Add-Member -NotePropertyName mcpTiming -NotePropertyValue @{requestMs=[Math]::Round($watch.Elapsed.TotalMilliseconds,2)} -Force
         $responses[$last]=$final | ConvertTo-Json -Depth 80 -Compress
     }
@@ -90,7 +95,7 @@ while ($null -ne ($line=[Console]::ReadLine())) {
                     'initialize' {
                         if ($request.params.protocolVersion -isnot [string] -or -not $request.params.protocolVersion) {throw 'Initialize requires protocolVersion.'}
                         $version=if ($request.params.protocolVersion -in @('2024-11-05','2025-03-26','2025-06-18')) {$request.params.protocolVersion} else {'2025-06-18'}
-                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.0.0'}}
+                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.0.1'}}
                         $negotiated=$true;$ready=$false
                     }
                     'ping' {$reply.result=@{}}
