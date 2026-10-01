@@ -11,6 +11,7 @@ param(
     [string[]]$Arguments=@(),
     [string]$RequestsPath,
     [switch]$RequestsStdin,
+    [string]$RequestsJson,
     [string]$Route,
     [string]$ObservedResult,
     [string]$VerificationCommandId,
@@ -18,24 +19,28 @@ param(
     [ValidateSet('Compact','Full')] [string]$OutputMode='Compact'
 )
 $ErrorActionPreference='Stop'
-[Console]::InputEncoding=New-Object Text.UTF8Encoding($false)
-[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
+if ([Console]::InputEncoding.CodePage -ne 65001) { [Console]::InputEncoding=New-Object Text.UTF8Encoding($false) }
+if ([Console]::OutputEncoding.CodePage -ne 65001) { [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false) }
 Import-Module (Join-Path $PSScriptRoot 'Framework\AutomatedGuiTestingAgentFramework.psm1')
 function Read-Requests {
-    if ($RequestsStdin -and $RequestsPath) { throw 'Use RequestsStdin or RequestsPath, not both.' }
-    if (-not $RequestsStdin -and -not $RequestsPath) { throw 'Provide RequestsPath for a JSON file, or RequestsStdin for UTF-8 JSON input.' }
-    $raw=if ($RequestsStdin) { [Console]::In.ReadToEnd() } else { Get-Content -LiteralPath $RequestsPath -Raw }
+    if (@($RequestsStdin.IsPresent, [bool]$RequestsPath, [bool]$RequestsJson | Where-Object {$_}).Count -ne 1) { throw 'Provide exactly one of RequestsStdin, RequestsPath or RequestsJson.' }
+    $raw=if ($RequestsStdin) { [Console]::In.ReadToEnd() } elseif ($RequestsPath) { Get-Content -LiteralPath $RequestsPath -Raw } else {$RequestsJson}
     if ([string]::IsNullOrWhiteSpace($raw)) { throw 'Request JSON is empty; no action was dispatched.' }
     $raw.TrimStart([char]0xFEFF) | ConvertFrom-Json
 }
-function Write-Response($Result, [int]$ActiveStep=0, [string]$ActiveCommand) {
-    $workflow=Get-AGTAExplorationWorkflow -RunRoot $RunRoot -StepIndex $ActiveStep -Result $Result -Command $ActiveCommand
-    if ($Result -is [System.Collections.IDictionary]) { $Result['workflow']=$workflow }
-    else { $Result | Add-Member -NotePropertyName workflow -NotePropertyValue $workflow -Force }
+function Write-Response($Result, [int]$ActiveStep=0, [string]$ActiveCommand, [bool]$IncludeWorkflow=$true) {
+    $workflow=$null
+    if ($IncludeWorkflow -or $OutputMode -eq 'Full') {
+        $workflow=Get-AGTAExplorationWorkflow -RunRoot $RunRoot -StepIndex $ActiveStep -Result $Result -Command $ActiveCommand
+        if ($Result -is [System.Collections.IDictionary]) { $Result['workflow']=$workflow }
+        else { $Result | Add-Member -NotePropertyName workflow -NotePropertyValue $workflow -Force }
+    }
     if ($OutputMode -eq 'Compact' -and $Result.explorationCommandId) {
         # Complete command results remain in the transcript; never truncate readback.
         $Result=[ordered]@{ok=$Result.ok;command=$Result.command;data=$Result.data;error=$Result.error;
-            outcome=$Result.outcome;durationMs=$Result.durationMs;explorationCommandId=$Result.explorationCommandId;verification=$Result.verification;workflow=$workflow}
+            outcome=$Result.outcome;durationMs=$Result.durationMs;totalDurationMs=$Result.totalDurationMs;
+            explorationCommandId=$Result.explorationCommandId;verification=$Result.verification}
+        if ($workflow) {$Result.workflow=$workflow}
     }
     $Result | ConvertTo-Json -Depth 80 -Compress
 }
@@ -57,7 +62,7 @@ try {
             if (-not $TestCaseCsv) { throw 'Begin requires TestCaseCsv.' }
             Initialize-AGTAExploration $RunRoot $TestCaseCsv $InteractionPolicy (Get-Item -LiteralPath $PotatoCliPath).FullName | Out-Null
             $result=@{ok=$true;runRoot=$RunRoot;explorationPath=$paths.manifest;explorationEvidenceRoot=$paths.evidenceRoot;steps=@(Import-Csv -LiteralPath $TestCaseCsv);
-                next='Build GUI output filenames inside the existing explorationEvidenceRoot and add type -PathKind SaveFile/OpenFile. Set $OutputEncoding to UTF8Encoding(false), then pipe a JSON request array to powershell.exe -NoProfile -ExecutionPolicy Bypass -File Invoke-Exploration.ps1 -Action Batch -RunRoot <this-root> -RequestsStdin. This combines request creation and execution in one tool call. RequestsPath JSON files also work. Use RecordSteps for reviewed receipts, then close the owned app and Complete.'}
+                next='Keep this RunRoot. If interactive process stdin is available, retain one Invoke-ExplorationStream.ps1 -RunRoot <this-root> process and send JSON action/requests lines. Otherwise pipe UTF-8 JSON to Invoke-Exploration.ps1 -Action Batch -RunRoot <this-root> -RequestsStdin in one tool call. Use the existing explorationEvidenceRoot for full GUI output paths and type PathKind. RecordSteps after each fully verified row; close owned windows, Complete, generate and replay.'}
         }
         { $_ -in @('Command','Batch') } {
             if ($m.completed) { throw 'Exploration is complete; no action was dispatched.' }
@@ -70,6 +75,7 @@ try {
             foreach ($request in $requests) {
                 if ($request.stepIndex -lt 1 -or $request.stepIndex -gt $m.stepCount -or -not $request.command -or @($request.arguments | Where-Object {$_ -isnot [string]}).Count) { throw 'Every command needs a valid stepIndex, command and string arguments; no action was dispatched.' }
             }
+            $requestIndex=0
             foreach ($request in $requests) {
                 $values=@($request.arguments)
                 if ($OutputMode -eq 'Compact' -and $request.command -eq 'observe' -and -not @($values | Where-Object {$_ -match '^--?Format(?:=|$)'}).Count) { $values+=@('-Format','Compact') }
@@ -77,8 +83,10 @@ try {
                 $id=Add-AGTAExplorationCommand $RunRoot $request.stepIndex $request.command $values $result
                 $result | Add-Member -NotePropertyName explorationCommandId -NotePropertyValue $id -Force
                 $result | Add-Member -NotePropertyName verification -NotePropertyValue (Get-AGTAExplorationVerificationInfo @{command=$request.command;result=$result}) -Force
-                Write-Response $result $request.stepIndex $request.command
-                if (-not (Test-AGTAExplorationCommandSucceeded $result $request.command)) { exit 1 }
+                $succeeded=Test-AGTAExplorationCommandSucceeded $result $request.command
+                $requestIndex++
+                Write-Response $result $request.stepIndex $request.command ($requestIndex -eq $requests.Count -or -not $succeeded)
+                if (-not $succeeded) { exit 1 }
             }
             return
         }

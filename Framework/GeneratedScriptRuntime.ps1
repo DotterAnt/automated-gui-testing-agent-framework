@@ -136,7 +136,7 @@ function Invoke-PotatoJson {
         [Parameter(Mandatory)]
         [string] $Command,
 
-        [string[]] $Arguments = @()
+        [object[]] $Arguments = @()
     )
 
     $context = Get-AGTAGeneratedTestContext
@@ -238,9 +238,10 @@ function Invoke-StepCommand {
         [Parameter(Mandatory)]
         [string] $Command,
 
-        [string[]] $Arguments = @()
+        [object[]] $Arguments = @()
     )
 
+    $Arguments=@(Resolve-AGTACommandArguments $Command $Arguments)
     $result = Invoke-PotatoJson -Command $Command -Arguments $Arguments
     $Commands.Value = @($Commands.Value) + (New-CommandSummary -Command $Command -Arguments $Arguments -Result $result)
     return $result
@@ -250,7 +251,7 @@ function Invoke-StepClick {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [ref] $Commands,
-        [Parameter(Mandatory)] [string[]] $Arguments,
+        [Parameter(Mandatory)] [object[]] $Arguments,
         [ValidateSet('Auto','Mouse','Invoke')] [string] $Method = 'Auto',
         [string] $Message = 'Visible click failed.'
     )
@@ -717,7 +718,8 @@ function Complete-AGTAGeneratedTest {
         [switch] $AllowSkipped,
 
         [object] $ExtraArtifacts = $null,
-        [switch] $PassThru
+        [switch] $PassThru,
+        [ValidateSet('Compact','Full')] [string] $OutputMode = 'Compact'
     )
 
     $context = Get-AGTAGeneratedTestContext
@@ -789,12 +791,29 @@ function Complete-AGTAGeneratedTest {
     $context.Timing.otherMs = $context.Timing.totalMs - $context.Timing.wrapperMs
     $final | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath $context.ResultPath -Encoding UTF8
     if ($PassThru) { return [pscustomobject]$final }
-    $final | ConvertTo-Json -Depth 80 -Compress
+    if ($OutputMode -eq 'Full') { $final | ConvertTo-Json -Depth 80 -Compress; return }
+    ConvertTo-AGTACompactTestResult $final | ConvertTo-Json -Depth 40 -Compress
+}
+
+function ConvertTo-AGTACompactTestResult {
+    param($Result)
+    # Full arguments, assertions and cleanup transcripts stay in resultPath.
+    # Return actionable failures once instead of replaying every successful call.
+    [ordered]@{ok=$Result.ok;summary=$Result.summary;cleanupOk=$Result.cleanupOk;
+        coverageOk=$Result.coverageOk;assertionsOk=$Result.assertionsOk;timing=$Result.timing;
+        interactionPolicy=$Result.interactionPolicy;testCase=$Result.testCase;
+        startedAt=$Result.startedAt;finishedAt=$Result.finishedAt;
+        executionId=$Result.executionId;runRoot=$Result.runRoot;artifacts=$Result.artifacts;
+        steps=@($Result.steps | ForEach-Object {
+            [ordered]@{stepIndex=$_.stepIndex;action=$_.action;status=$_.status;error=$_.error;
+                evidence=$_.evidence;failedCommands=@($_.commands | Where-Object {-not $_.ok})}
+        })}
 }
 
 function Invoke-AGTATestPlan {
     [CmdletBinding()]
-    param([Parameter(Mandatory)] [scriptblock[]]$StepBodies, [switch]$PassThru)
+    param([Parameter(Mandatory)] [scriptblock[]]$StepBodies, [switch]$PassThru,
+        [ValidateSet('Compact','Full')] [string]$OutputMode='Compact')
     $context=Get-AGTAGeneratedTestContext
     if ($StepBodies.Count -ne $context.Steps.Count -or @($StepBodies | Where-Object {$null -eq $_}).Count) {
         throw 'Test plan must contain exactly one non-null body per CSV row, in order, before any GUI action.'
@@ -815,7 +834,7 @@ function Invoke-AGTATestPlan {
         }
     } finally {
         $cleanup=@(Invoke-TestCleanup)
-        Complete-AGTAGeneratedTest -StepResults $results -Cleanup $cleanup -PassThru:$PassThru
+        Complete-AGTAGeneratedTest -StepResults $results -Cleanup $cleanup -PassThru:$PassThru -OutputMode $OutputMode
     }
 }
 

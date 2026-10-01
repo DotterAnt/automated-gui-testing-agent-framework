@@ -68,8 +68,8 @@ Invoke-PotatoJson -Command "observe" -Arguments @("-Depth", "2")
 
 The runtime helper:
 
-- run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <potato.ps1>`,
-- parse the single JSON result,
+- use InProcess transport by default; explicit Process transport runs `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <potato.ps1>`,
+- consume the CLI result object (or parse its JSON for Process transport),
 - throw a clear error if the output is not JSON,
 - save full command transcripts under an execution-specific file in `logs`, for example `potato-commands-<executionId>.jsonl`.
 
@@ -148,7 +148,7 @@ The script must write exactly one JSON object to stdout:
 }
 ```
 
-The same JSON must also be saved to `results\result.json`. Prefer `Complete-AGTAGeneratedTest` for this instead of hand-building the result envelope.
+The complete result is saved to `results\result.json`. Default stdout is a compact projection with the same success, coverage, assertions, cleanup status, timing, artifacts and row statuses, plus failed command details. It omits successful command/assertion transcripts, which remain in the saved result and command log. `Invoke-AGTATestPlan -OutputMode Full` or `Complete-AGTAGeneratedTest -OutputMode Full` restores the full stdout envelope shown above. `-PassThru` always returns the full result object. Prefer the shared completion helper over hand-building output.
 
 ## Cleanup
 
@@ -185,4 +185,4 @@ For shell authoring, `Get-RuntimeHelp.ps1 -Name <helper>` returns full JSON help
 `type -Verify` polls until `-VerifyTimeoutMs` (default 3000 ms) or a supplied positive `-MaxAttempts` limit. It never retypes. `-VerifyMode Exact|Contains|NormalizedExact|NormalizedContains` controls comparison; normalized modes reconcile line endings. `-TimeoutMs` is the selector lookup deadline. On failure the CLI reports attempt count and observed length without embedding field contents.
 ## Sequential plan helper
 
-`Invoke-AGTATestPlan -StepBodies <scriptblock[]>` accepts exactly one body per CSV row after runtime initialization. Each body receives Commands and Evidence references, just like Invoke-RecordedStep. It stops dependent bodies after the first failure, emits SKIPPED results for the remaining rows, always invokes cleanup, and calls Complete-AGTAGeneratedTest once. Call `exit (Get-AGTATestExitCode)` afterward. Assertions and the existing result schema are unchanged. Existing scripts that manually use Invoke-RecordedStep and finally remain supported.
+`Invoke-AGTATestPlan -StepBodies <scriptblock[]>` accepts exactly one body per CSV row after runtime initialization. Each body receives Commands and Evidence references, just like Invoke-RecordedStep. It stops dependent bodies after the first failure, emits SKIPPED results for the remaining rows, always invokes cleanup, and calls Complete-AGTAGeneratedTest once. Call `exit (Get-AGTATestExitCode)` afterward. Assertions and the saved result schema are unchanged; stdout defaults to the compact summary described above. Existing scripts that manually use Invoke-RecordedStep and finally remain supported.

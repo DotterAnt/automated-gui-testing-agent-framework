@@ -6,7 +6,7 @@ function Get-AGTARuntimeHelp {
     $published = @(
         'Initialize-AGTAGeneratedTest', 'Invoke-RecordedStep', 'Invoke-StepCommand', 'Invoke-StepClick', 'Invoke-AGTATestPlan',
         'Assert-PotatoOk', 'Assert-PotatoFound', 'Assert-FileWait',
-        'Assert-ExpectedResult', 'Assert-TextContains', 'Read-AGTAArtifactBytes', 'Assert-ArtifactPrefix',
+        'Assert-ExpectedResult', 'Assert-TextContains', 'Read-AGTAArtifactBytes', 'Read-AGTAZipText', 'Assert-ArtifactPrefix',
         'Invoke-EvidenceScreenshot', 'Add-EvidencePath', 'Register-OpenedProcess',
         'Register-CreatedExternalPath', 'Invoke-TestCleanup',
         'Complete-AGTAGeneratedTest', 'Get-AGTATestExitCode',
@@ -18,11 +18,25 @@ function Get-AGTARuntimeHelp {
     $names = if ($Name) { @($Name) } else { $published }
     foreach ($helper in $names) {
         $command = Get-Command -Name $helper -CommandType Function -ErrorAction Stop
+        $constraints=[ordered]@{}
+        foreach ($parameter in $command.Parameters.Values) {
+            foreach ($attribute in $parameter.Attributes) {
+                if ($attribute -is [Management.Automation.ValidateRangeAttribute]) { $constraints[$parameter.Name]=@{minimum=$attribute.MinRange;maximum=$attribute.MaxRange} }
+                elseif ($attribute -is [Management.Automation.ValidateSetAttribute]) {$constraints[$parameter.Name]=@{values=@($attribute.ValidValues)}}
+            }
+        }
         [pscustomobject]@{
             name = $command.Name
             syntax = [string](Get-Command -Syntax -Name $helper)
             sourcePath = $command.ScriptBlock.File
             available = $true
+            parameterConstraints = $constraints
+            note = switch ($helper) {
+                Read-AGTAArtifactBytes {'Count is an exact byte count, not a maximum or whole-file read. Use Read-AGTAZipText for archive text.'}
+                Read-AGTAZipText {'Read-only text/XML entries selected by wildcard names. MaxBytes limits total uncompressed content; assert the returned content separately.'}
+                Invoke-StepCommand {'*Json option values may be strings or objects; objects are serialized before CLI invocation.'}
+                default {$null}
+            }
         }
     }
 }
@@ -64,12 +78,32 @@ function Test-AGTAGeneratedScript {
         $issues += @($exploration.issues)
     }
     $localFunctions = @{}
+    foreach ($assignment in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst]}, $true))) {
+        if ($assignment.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+            $assignment.Left.VariablePath.UserPath -match '^(?:(?:global|script|local):)?(?:HOME|PID|PSVersionTable|PSEdition|PSHOME|Host|ExecutionContext|ShellId|true|false)$') {
+            $issues += "Line $($assignment.Extent.StartLineNumber): '$($assignment.Left.Extent.Text)' is an automatic read-only/constant variable. Use a testcase-specific variable name before running the GUI."
+        }
+    }
     foreach ($definition in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst]}, $true))) {
         $localFunctions[$definition.Name] = $true
     }
     $checked = 0
     foreach ($call in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst]}, $true))) {
         $name = $call.GetCommandName()
+        if ($name -eq 'Read-AGTAArtifactBytes' -and -not $localFunctions.ContainsKey($name)) {
+            $parts=@($call.CommandElements)
+            for ($i=1;$i -lt $parts.Count;$i++) {
+                if ($parts[$i] -is [Management.Automation.Language.CommandParameterAst] -and $parts[$i].ParameterName -eq 'Count') {
+                    $value=$parts[$i].Argument
+                    if (-not $value -and $i+1 -lt $parts.Count) { $value=$parts[$i+1] }
+                    $countValue=0L
+                    if ($value -is [Management.Automation.Language.ConstantExpressionAst] -and
+                        (-not [long]::TryParse([string]$value.Value,[ref]$countValue) -or $countValue -lt 1 -or $countValue -gt 1048576)) {
+                        $issues += "Line $($parts[$i].Extent.StartLineNumber): Read-AGTAArtifactBytes -Count must be 1..1048576 and reads exactly that many bytes. For ZIP text/content use Read-AGTAZipText; do not guess the archive size."
+                    }
+                }
+            }
+        }
         if ($name -match '^(?:New-Object)$' -and $call.Extent.Text -match '(?i)-ComObject\b') {
             $issues += "Line $($call.Extent.StartLineNumber): application COM automation bypasses the required GUI route. Use recorded CLI actions."
         }

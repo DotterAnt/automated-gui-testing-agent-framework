@@ -1,7 +1,16 @@
 # Evidence-backed authoring checkpoint. This is an audit trail, not a sandbox.
 function Resolve-AGTACommandArguments {
-    param([string]$Command,[string[]]$Arguments=@())
-    $values=@($Arguments)
+    param([string]$Command,[object[]]$Arguments=@())
+    $values=@(for ($i=0;$i -lt $Arguments.Count;$i++) {
+        $value=$Arguments[$i]
+        if ($null -eq $value) { throw "Null CLI argument at index $i. No action was dispatched." }
+        if ($value -is [Collections.IDictionary] -or $value -is [pscustomobject] -or $value -is [array]) {
+            if ($i -eq 0 -or [string]$Arguments[$i-1] -notmatch '^--?[A-Za-z]+Json$') {
+                throw "Structured CLI argument at index $i needs a preceding *Json option. No action was dispatched."
+            }
+            ConvertTo-Json -InputObject $value -Depth 30 -Compress
+        } else { [string]$value }
+    })
     if ($Command -eq 'observe' -and -not @($values | Where-Object {$_ -match '^--?Format(?:=|$)'}).Count) { $values+=@('-Format','Compact') }
     if ($Command -eq 'start') {
         $modes=@($values | Where-Object {$_ -match '^--?RequireNew(?:Process|Window)(?:=|$)'})
@@ -135,7 +144,16 @@ function Complete-AGTAExploration {
             });failedCommandIds=@($commands | Where-Object { -not (Test-AGTAExplorationCommandSucceeded $_.result $_.command) } | ForEach-Object {$_.id})}
     })
     @{note='Reference only, not a generated test. Preserve tested action arguments; discard irrelevant discovery and add real assertions. New selector constraints/routes need GUI validation.';steps=$routes} | ConvertTo-Json -Depth 24 | Set-Content -LiteralPath $routesPath -Encoding UTF8
-    @{ok=$true;explorationPath=$paths.manifest;routesPath=$routesPath;covered=$manifest.stepCount}
+    $referencePath=Join-Path $RunRoot 'logs\replay-reference.json'
+    @{note='Reviewed route reference, not a replay script. Keep tested guards and assertions. Omit exploratory recovery actions that are unnecessary from the verified initial state.';
+        steps=@($routes | ForEach-Object {
+            $row=$_
+            [ordered]@{stepIndex=$row.stepIndex;route=$row.route;observedResult=$row.observedResult;
+                commands=@($row.successfulCommands | Where-Object {$_.command -in @('start','focus','click','click-coordinate','type','press-key','hotkey','drag','close-window','wait-element','wait-file') -or $_.id -in $row.verificationCommandIds} | ForEach-Object {
+                    [ordered]@{command=$_.command;arguments=$_.arguments}
+                })}
+        })} | ConvertTo-Json -Depth 24 -Compress | Set-Content -LiteralPath $referencePath -Encoding UTF8
+    @{ok=$true;explorationPath=$paths.manifest;routesPath=$routesPath;replayReferencePath=$referencePath;covered=$manifest.stepCount}
 }
 
 function Test-AGTAExplorationCommandSucceeded {

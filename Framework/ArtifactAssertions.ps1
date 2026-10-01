@@ -58,3 +58,50 @@ function Assert-ArtifactPrefix {
     catch { Assert-ExpectedResult -Condition $false -Message "$Message $($_.Exception.Message)"; return }
     Assert-ExpectedResult -Condition $matches -Message $Message
 }
+
+function Read-AGTAZipText {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string[]]$EntryPattern,
+        [ValidateRange(1,16777216)] [int]$MaxBytes=1048576,
+        [ValidateRange(0,60000)] [int]$TimeoutMs=2000)
+    # Generic read-only archive inspection. No application APIs or synthetic outputs.
+    Add-Type -AssemblyName System.IO.Compression
+    if (-not $EntryPattern.Count -or @($EntryPattern | Where-Object {[string]::IsNullOrWhiteSpace($_)}).Count) { throw 'EntryPattern must not be empty.' }
+    $watch=[Diagnostics.Stopwatch]::StartNew()
+    do {
+        $stream=$null; $archive=$null
+        try {
+            $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+            $archive=New-Object IO.Compression.ZipArchive($stream,[IO.Compression.ZipArchiveMode]::Read,$true)
+            $items=@(); $total=0
+            foreach ($entry in $archive.Entries) {
+                if ($entry.FullName.EndsWith('/') -or -not @($EntryPattern | Where-Object {$entry.FullName -like $_}).Count) { continue }
+                if ($entry.Length -gt $MaxBytes-$total) { throw [IO.InvalidDataException]::new('Selected ZIP text exceeds MaxBytes; narrow EntryPattern.') }
+                $input=$null; $buffer=$null
+                try {
+                    $input=$entry.Open(); $buffer=New-Object IO.MemoryStream
+                    $chunk=New-Object byte[] 8192
+                    while (($n=$input.Read($chunk,0,$chunk.Length)) -gt 0) {
+                        $total+=$n
+                        if ($total -gt $MaxBytes) { throw [IO.InvalidDataException]::new('Selected ZIP text exceeds MaxBytes; narrow EntryPattern.') }
+                        $buffer.Write($chunk,0,$n)
+                    }
+                    $buffer.Position=0
+                    $reader=New-Object IO.StreamReader($buffer,[Text.UTF8Encoding]::new($false,$true),$true,1024,$true)
+                    try { $text=$reader.ReadToEnd() } finally { $reader.Dispose() }
+                    $items+=,[pscustomobject]@{name=$entry.FullName;text=$text}
+                } finally { if ($input) {$input.Dispose()}; if ($buffer) {$buffer.Dispose()} }
+            }
+            if (-not $items.Count) { throw [IO.InvalidDataException]::new('No ZIP entries match EntryPattern.') }
+            return $items
+        }
+        catch {
+            # Retry transient output/file locks only. Corrupt content and bounds
+            # are real assertion failures, not reasons to spend the full timeout.
+            if ($_.Exception -isnot [IO.IOException] -or $_.Exception -is [IO.InvalidDataException] -or $watch.ElapsedMilliseconds -ge $TimeoutMs) { throw }
+        }
+        finally { if ($archive) {$archive.Dispose()}; if ($stream) {$stream.Dispose()} }
+        Start-Sleep -Milliseconds ([int][Math]::Max(1,[Math]::Min(100,$TimeoutMs-$watch.ElapsedMilliseconds)))
+    } while ($true)
+}
