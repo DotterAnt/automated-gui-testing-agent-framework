@@ -12,6 +12,14 @@ try {
     $values=@(Resolve-AGTACommandArguments click @('-WindowSelectorJson',$guard,'-Name','Submit'))
     $parsed=$values[1] | ConvertFrom-Json
     Check ($parsed.Name -eq 'Observed dialog' -and $parsed.ProcessId -eq 123 -and $values[3] -eq 'Submit') 'Structured guard was cast to OrderedDictionary text.'
+    $second=@(Resolve-AGTACommandArguments click $values)
+    Check (($second -join '|') -ceq ($values -join '|')) 'Repeated normalization double-encoded a JSON guard.'
+    $json=$guard | ConvertTo-Json -Compress
+    $values=@(Resolve-AGTACommandArguments click @('-WindowSelectorJson',$json))
+    Check ($values[1] -ceq $json -and ($values[1] | ConvertFrom-Json).Name -eq $guard.Name) 'A ConvertTo-Json output string was classified as a structured object.'
+    $path=Join-Path $root 'save path.docx'
+    $values=@(Resolve-AGTACommandArguments type @('-Text',$path))
+    Check ($values[1] -ceq $path) 'A Join-Path output string was rejected as structured text.'
     $values=@(Resolve-AGTACommandArguments observe @('-PathJson',@(@{Name='Container'},@{AutomationId='Field'})))
     Check (($values[1] | ConvertFrom-Json).Count -eq 2) 'Structured selector path lost its array.'
     $values=@(Resolve-AGTACommandArguments observe @('-PathJson',@(@{Name='Container'})))
@@ -66,7 +74,7 @@ try {
         '{"action":"Quit"}'
     )
     $responses=@($lines | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $frameworkRoot 'Invoke-ExplorationStream.ps1') -RunRoot $run | ForEach-Object {$_ | ConvertFrom-Json})
-    Check ($LASTEXITCODE -eq 0 -and $responses.Count -eq 4 -and $responses[0].explorationCommandId -and $responses[1].explorationCommandId -and $responses[2].commandCount -eq 2) "Persistent exploration lost responses or receipts: $($responses.Count) responses, exit $LASTEXITCODE."
+    Check ($LASTEXITCODE -eq 0 -and $responses.Count -eq 4 -and $responses[0].explorationCommandId -and $responses[1].explorationCommandId -and $responses[2].commandCount -eq 2) "Persistent exploration lost responses or receipts: $($responses.Count) responses, exit $LASTEXITCODE. $($responses | ConvertTo-Json -Depth 8 -Compress)"
     Check (-not $responses[0].workflow -and $responses[1].workflow -and $responses[2].workflow) 'Batch repeated workflow or omitted it at its final observation.'
     $stopped=Join-Path $root 'stopped'
     Initialize-AGTAExploration $stopped $csv GuiNavigation $cli | Out-Null
@@ -74,6 +82,16 @@ try {
     Check ($LASTEXITCODE -eq 1 -and $responses.Count -eq 1 -and -not $responses[0].ok -and $responses[0].workflow) 'Persistent exploration continued queued actions after failure.'
     $responses=@('{"action":"Batch","requests":[]}' | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $frameworkRoot 'Invoke-ExplorationStream.ps1') -RunRoot $stopped | ForEach-Object {$_ | ConvertFrom-Json})
     Check ($LASTEXITCODE -eq 1 -and $responses.Count -eq 1 -and $responses[0].outcome -eq 'not-dispatched') 'Malformed stream request hid its failure.'
+    $objects=Join-Path $root 'objects'
+    Initialize-AGTAExploration $objects $csv GuiNavigation $cli | Out-Null
+    $requests='[{"stepIndex":1,"command":"help","arguments":["-Topic","type","-WindowSelectorJson",{"Name":"Fixture dialog","ClassName":"#32770"}]}]'
+    $responses=@($requests | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $frameworkRoot 'Invoke-Exploration.ps1') -Action Batch -RunRoot $objects -RequestsStdin -Transport InProcess | ForEach-Object {$_ | ConvertFrom-Json})
+    Check ($LASTEXITCODE -eq 0 -and $responses.Count -eq 1 -and $responses[0].ok) 'Exploration still rejected structured *Json option values.'
+    $receipt=Get-Content -LiteralPath (Join-Path $objects 'logs\exploration-commands.jsonl') | ConvertFrom-Json
+    Check (($receipt.arguments[3] | ConvertFrom-Json).Name -eq 'Fixture dialog') 'Exploration receipt lost the actual serialized guard.'
+    $requests='[{"stepIndex":1,"command":"help","arguments":["-Topic","type"]},{"stepIndex":1,"command":"help","arguments":["-Topic",{"wrong":"object"}]}]'
+    $responses=@($requests | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $frameworkRoot 'Invoke-Exploration.ps1') -Action Batch -RunRoot $objects -RequestsStdin -Transport InProcess | ForEach-Object {$_ | ConvertFrom-Json})
+    Check ($LASTEXITCODE -eq 1 -and $responses.Count -eq 1 -and -not $responses[0].ok -and (Get-Content -LiteralPath (Join-Path $objects 'logs\exploration-commands.jsonl')).Count -eq 1) 'A malformed later request dispatched an earlier action before argument validation.'
     "Efficiency checks: $script:checks passed"
 } finally {
     $resolved=[IO.Path]::GetFullPath($root);$parent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'

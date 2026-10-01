@@ -17,6 +17,27 @@ try {
     Complete-AGTAExplorationStep $testRoot 1 'Synthetic test fixture route' 'Fixture verified' $receipt | Out-Null
     Complete-AGTAExploration $testRoot $csv GuiNavigation | Out-Null
     $ctx=Initialize-AGTAGeneratedTest -PotatoCliPath $cliPath -TestCaseCsv $csv -RunRoot $testRoot
+    $captured=New-Module -ScriptBlock {
+        function Invoke-PotatoCliCommand {
+            param($Command,$Arguments,$CliRoot,[switch]$AsObject)
+            $jsonIndex=[array]::IndexOf($Arguments,'-WindowSelectorJson')
+            $textIndex=[array]::IndexOf($Arguments,'-Text')
+            @{ok=$true;command=$Command;durationMs=0;data=@{guard=($Arguments[$jsonIndex+1] | ConvertFrom-Json);text=$Arguments[$textIndex+1]}}
+        }
+        Export-ModuleMember Invoke-PotatoCliCommand
+    }
+    $actualCli=$ctx.CliModule
+    $ctx.CliModule=$captured
+    try {
+        $commands=@()
+        $path=Join-Path $ctx.ExecutionEvidenceRoot 'saved artifact.docx'
+        $guard=[ordered]@{Name='Save dialog';ClassName='#32770';ProcessId=123}
+        foreach ($value in @($guard,($guard | ConvertTo-Json -Compress))) {
+            $result=Invoke-StepCommand ([ref]$commands) type @('-WindowSelectorJson',$value,'-Text',$path)
+            Check ($result.data.guard.Name -eq 'Save dialog' -and $result.data.guard.ProcessId -eq 123 -and $result.data.text -ceq $path) 'Replay wrapper corrupted a cmdlet path or foreground guard.'
+        }
+        Check (($commands[0].arguments[1] | ConvertFrom-Json).ClassName -eq '#32770' -and ($commands[1].arguments[1] | ConvertFrom-Json).Name -eq 'Save dialog') 'Replay summary did not retain the actual JSON guard.'
+    } finally {$ctx.CliModule=$actualCli;Remove-Module $captured}
     Push-Location $testRoot
     try {
         $relative=Initialize-AGTAGeneratedTest -PotatoCliPath $cliPath -TestCaseCsv '.\case.csv' -RunRoot '.\relative run' -ExplorationPath '.\logs\exploration.json'

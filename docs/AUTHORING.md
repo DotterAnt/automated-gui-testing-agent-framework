@@ -30,6 +30,10 @@ $OutputEncoding = New-Object Text.UTF8Encoding($false)
 
 Set OutputEncoding each invocation; the literal here-string prevents testcase expansion. Do not create a separate file/wrapper per batch or pass arrays across powershell.exe -File. RequestsPath supports existing files; RequestsJson is for in-process callers such as the stream, avoiding native shell JSON quote loss. Raw CLI calls do not record exploration receipts.
 
+Default Auto transport reuses one hidden local PowerShell host per RunRoot across these ordinary shell calls; no interactive session handle is needed. The current-user-only pipe processes requests sequentially, retains receipts/policy, and stops each batch at failure. The host exits after successful Complete or five idle minutes. StopHost stops only the transport and leaves exploration resumable. Transport InProcess runs directly for diagnosis or hosts that cannot retain background children. After framework/CLI updates, StopHost before resuming. A lost response has outcome unknown: inspect the GUI/Status before retrying, since the host may have performed the action.
+
+JSON strings use `\r\n` or `\n` for actual line breaks. PowerShell backticks inside a literal JSON here-string are literal text; do not write `` `r`n `` when a testcase requires a newline. Structured *Json option values are accepted in both exploration batches and generated replays; already serialized JSON strings stay unchanged.
+
 With interactive process stdin, launch once:
 
 ~~~powershell
@@ -73,6 +77,18 @@ Before a file-manager GUI Open/double-click that launches another app: windows -
 
 Owned dialogs prefer Scope FocusedWindow. Broker dialogs need their exact observed title/class guard and fallback evidence. After submit, windows -Foreground -WindowTitle '<tested dialog title>' -TimeoutMs 15000 waits for that foreground title and returns count 0 on timeout. Assert count before using foregroundSelector. Bare windows -Foreground is a snapshot, not a transition check. Do not filter by the main app's PID; a broker may use another process.
 
+A complete replay guard pattern is:
+
+~~~powershell
+$dialog = Invoke-StepCommand -Commands $Commands -Command windows -Arguments @('-Foreground','-WindowTitle','<tested exact title>','-TimeoutMs','15000')
+Assert-PotatoFound $dialog 'Expected foreground dialog'
+$scope = @('-Scope','ForegroundWindow','-WindowSelectorJson',$dialog.data.foregroundSelector,
+    '-FallbackReason','Observed dialog route','-FallbackEvidence',$Context.CommandLogPath)
+# Add the observed control selector, full Text path, PathKind, PreDelete and Verify.
+$typed = Invoke-StepCommand -Commands $Commands -Command type -Arguments ($scope + @('-AutomationId','<observed id>','-Text',$path,'-PathKind','SaveFile','-PreDelete','-Verify'))
+Assert-PotatoOk $typed 'Filename must be entered and verified'
+~~~
+
 Runtime *Json values accept JSON strings, hashtables, ordered dictionaries or path arrays; objects are serialized before invocation. Capture a fresh foregroundSelector per replay, rather than embedding a previous PID. Scoped input waits for the exact guard for TimeoutMs (default 1000), checks again before input and never activates another window. Use a tested wait for slow transitions, not repeated submits or fixed sleeps.
 
 ## Discovery and typing
@@ -89,7 +105,7 @@ Default pacing is 5 ms per Unicode scalar; legacy TypeByCharacter uses 50 ms. Pr
 
 ## Generate and replay
 
-Use Invoke-AGTATestPlan with one body per CSV row and InProcess transport. It handles dependency skips, assertions, cleanup and final output. Runtime preflights each execution; avoid duplicate preflight calls after repairs. Avoid read-only automatic variables such as HOME/PID. After behavior changes replay the corrected revision with its completed manifest and fresh paths. Inspect summary.failedSteps/cleanupOk first; successful cleanup needs no duplicate close/process probes.
+Use Invoke-AGTATestPlan with one body per CSV row and InProcess transport. It handles dependency skips, assertions, cleanup and final output. Runtime preflights each execution; avoid duplicate preflight calls after repairs. Avoid read-only automatic variables such as HOME/PID. After behavior changes replay the corrected revision with its completed manifest and fresh paths. Inspect summary.failedSteps/cleanupOk first; successful cleanup needs no duplicate close/process probes. Repair an argument/serialization error with a small read-only reproduction first; do not repeatedly replay the whole GUI flow while guessing guard fields or weakening its scope.
 
 Assert-PotatoOk proves command execution. Use Assert-PotatoFound for existence, Assert-ExpectedResult for state and wait-file -MinBytes 1 -StableMs 500 with Assert-FileWait for files. Reopen through the GUI, read actual content and Assert-TextContains for every fragment. Titles/signatures do not replace content/persistence assertions. Image-only PDFs need actual image/content checks, including cropping.
 

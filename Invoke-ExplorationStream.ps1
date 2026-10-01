@@ -17,7 +17,7 @@ while ($null -ne ($line=[Console]::ReadLine())) {
             [Console]::WriteLine('{"ok":true,"action":"Quit"}')
             break
         }
-        $parameters=@{Action=$request.action;RunRoot=$RunRoot;OutputMode=$OutputMode}
+        $parameters=@{Action=$request.action;RunRoot=$RunRoot;OutputMode=$OutputMode;Transport='InProcess'}
         if ($request.action -in @('Batch','RecordSteps')) {
             if (-not $request.requests) {throw 'Batch/RecordSteps needs a nonempty requests array.'}
             $parameters.RequestsJson=ConvertTo-Json -InputObject @($request.requests) -Depth 40 -Compress

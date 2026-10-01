@@ -4,7 +4,7 @@ For CSV authoring, read `AGENTS.md`, `docs/AUTHORING.md`, the supplied CSV and t
 
 PowerShell-only framework for turning CSV testcase descriptions into repeatable GUI automation scripts that use `potato-cli`.
 
-Interactive agents can keep `Invoke-ExplorationStream.ps1` open across batches and row recording, avoiding a new PowerShell host for each request. Complete returns `replayReferencePath` for a small route reference. Replay stdout defaults to row status and actionable failures; full results and command transcripts stay on disk, with `-OutputMode Full` available on the test plan/completion helper. Generic `Read-AGTAZipText` verifies text/XML entries in an output archive without guessing its byte count. See the authoring guide for transport and dialog-wait examples.
+`Invoke-Exploration.ps1` defaults to Auto transport: a hidden local host stays warm across ordinary shell calls, using a current-user-only pipe and the existing CSV/policy/receipt checks. It exits after successful Complete or five idle minutes; StopHost leaves the walkthrough resumable. Transport InProcess runs directly for diagnosis. Interactive agents can instead keep `Invoke-ExplorationStream.ps1` open. Complete returns `replayReferencePath` for a small route reference. Replay stdout defaults to row status and actionable failures; full results and command transcripts stay on disk, with `-OutputMode Full` available on the test plan/completion helper. Generic `Read-AGTAZipText` verifies text/XML entries in an output archive without guessing its byte count. See the authoring guide for transport and dialog-wait examples.
 
 [Watch the PoTATo demo recording](https://github.com/DottedAnt-Dooz/automated-gui-testing-agent-framework/releases/download/demo-v1/demo.mkv)
 

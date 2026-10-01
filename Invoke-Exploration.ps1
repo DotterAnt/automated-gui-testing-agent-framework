@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)] [ValidateSet('Begin','Command','Batch','RecordStep','RecordSteps','Status','Complete')] [string]$Action,
+    [Parameter(Mandatory)] [ValidateSet('Begin','Command','Batch','RecordStep','RecordSteps','Status','Complete','StopHost')] [string]$Action,
     [Parameter(Mandatory)] [string]$RunRoot,
     [string]$TestCaseCsv,
     [string]$PotatoCliPath,
@@ -8,7 +8,7 @@ param(
     [string]$PolicyReason,
     [int]$StepIndex,
     [string]$Command,
-    [string[]]$Arguments=@(),
+    [object[]]$Arguments=@(),
     [string]$RequestsPath,
     [switch]$RequestsStdin,
     [string]$RequestsJson,
@@ -16,12 +16,12 @@ param(
     [string]$ObservedResult,
     [string]$VerificationCommandId,
     [string[]]$VerificationCommandIds=@(),
-    [ValidateSet('Compact','Full')] [string]$OutputMode='Compact'
+    [ValidateSet('Compact','Full')] [string]$OutputMode='Compact',
+    [ValidateSet('Auto','InProcess')] [string]$Transport='Auto'
 )
 $ErrorActionPreference='Stop'
 if ([Console]::InputEncoding.CodePage -ne 65001) { [Console]::InputEncoding=New-Object Text.UTF8Encoding($false) }
 if ([Console]::OutputEncoding.CodePage -ne 65001) { [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false) }
-Import-Module (Join-Path $PSScriptRoot 'Framework\AutomatedGuiTestingAgentFramework.psm1')
 function Read-Requests {
     if (@($RequestsStdin.IsPresent, [bool]$RequestsPath, [bool]$RequestsJson | Where-Object {$_}).Count -ne 1) { throw 'Provide exactly one of RequestsStdin, RequestsPath or RequestsJson.' }
     $raw=if ($RequestsStdin) { [Console]::In.ReadToEnd() } elseif ($RequestsPath) { Get-Content -LiteralPath $RequestsPath -Raw } else {$RequestsJson}
@@ -46,6 +46,30 @@ function Write-Response($Result, [int]$ActiveStep=0, [string]$ActiveCommand, [bo
 }
 try {
     $RunRoot=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RunRoot)
+    if ($Transport -eq 'Auto') {
+        . (Join-Path $PSScriptRoot 'Framework\ExplorationHost.ps1')
+        $parameters=@{}
+        foreach ($key in $PSBoundParameters.Keys) {
+            $value=$PSBoundParameters[$key]
+            $parameters[$key]=if ($value -is [Management.Automation.SwitchParameter]) {$value.IsPresent} else {$value}
+        }
+        $parameters.RunRoot=$RunRoot
+        foreach ($key in @('TestCaseCsv','PotatoCliPath','RequestsPath')) {
+            if ($parameters[$key]) {$parameters[$key]=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($parameters[$key])}
+        }
+        if ($RequestsStdin) {
+            $parameters.RequestsJson=[Console]::In.ReadToEnd()
+            $parameters.Remove('RequestsStdin')
+            # Do not erase a conflicting original source; validation stays exact.
+            if ($RequestsJson) {throw 'Provide exactly one of RequestsStdin, RequestsPath or RequestsJson.'}
+        }
+        $response=Invoke-AGTAExplorationHost -RunRoot $RunRoot -Parameters $parameters -Stop:($Action -eq 'StopHost')
+        foreach ($line in $response.responses) {$line}
+        if ($response.exitCode -ne 0) {exit 1}
+        return
+    }
+    if ($Action -eq 'StopHost') {throw 'StopHost uses the default Auto transport; exploration remains resumable.'}
+    Import-Module (Join-Path $PSScriptRoot 'Framework\AutomatedGuiTestingAgentFramework.psm1')
     $paths=Get-AGTAExplorationPaths $RunRoot
     if ($Action -ne 'Begin') {
         $m=Get-Content -LiteralPath $paths.manifest -Raw | ConvertFrom-Json
@@ -62,7 +86,7 @@ try {
             if (-not $TestCaseCsv) { throw 'Begin requires TestCaseCsv.' }
             Initialize-AGTAExploration $RunRoot $TestCaseCsv $InteractionPolicy (Get-Item -LiteralPath $PotatoCliPath).FullName | Out-Null
             $result=@{ok=$true;runRoot=$RunRoot;explorationPath=$paths.manifest;explorationEvidenceRoot=$paths.evidenceRoot;steps=@(Import-Csv -LiteralPath $TestCaseCsv);
-                next='Keep this RunRoot. If interactive process stdin is available, retain one Invoke-ExplorationStream.ps1 -RunRoot <this-root> process and send JSON action/requests lines. Otherwise pipe UTF-8 JSON to Invoke-Exploration.ps1 -Action Batch -RunRoot <this-root> -RequestsStdin in one tool call. Use the existing explorationEvidenceRoot for full GUI output paths and type PathKind. RecordSteps after each fully verified row; close owned windows, Complete, generate and replay.'}
+                next='Keep this RunRoot. Default Auto transport reuses a local host across ordinary shell calls; pipe UTF-8 JSON to Batch -RequestsStdin. Interactive stdin can instead retain Invoke-ExplorationStream.ps1. Use explorationEvidenceRoot for full GUI paths and type PathKind. RecordSteps after reviewing each row; close owned windows, Complete, generate and replay. Use Transport InProcess for debugging; StopHost leaves exploration resumable.'}
         }
         { $_ -in @('Command','Batch') } {
             if ($m.completed) { throw 'Exploration is complete; no action was dispatched.' }
@@ -72,8 +96,12 @@ try {
                 $requests=@($decoded)
             }
             if ($requests.Count -lt 1 -or $requests.Count -gt 20) { throw 'A known sequential batch must contain 1..20 commands.' }
+            # Validate/normalize the whole batch before the first GUI action.
+            # JSON objects are allowed only as values of *Json options, just as
+            # in generated replays. A malformed later request dispatches nothing.
             foreach ($request in $requests) {
-                if ($request.stepIndex -lt 1 -or $request.stepIndex -gt $m.stepCount -or -not $request.command -or @($request.arguments | Where-Object {$_ -isnot [string]}).Count) { throw 'Every command needs a valid stepIndex, command and string arguments; no action was dispatched.' }
+                if ($request.stepIndex -lt 1 -or $request.stepIndex -gt $m.stepCount -or -not $request.command) { throw 'Every command needs a valid stepIndex and command; no action was dispatched.' }
+                $request.arguments=@(Resolve-AGTACommandArguments $request.command @($request.arguments))
             }
             $requestIndex=0
             foreach ($request in $requests) {

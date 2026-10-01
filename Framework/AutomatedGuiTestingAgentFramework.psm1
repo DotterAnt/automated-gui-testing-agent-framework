@@ -352,7 +352,7 @@ function Invoke-AGTAPotatoJson {
         [Parameter(Mandatory)]
         [string] $Command,
 
-        [string[]] $Arguments = @(),
+        [object[]] $Arguments = @(),
 
         [Parameter(Mandatory)]
         [string] $RunRoot,
@@ -1098,4 +1098,4 @@ Export-ModuleMember -Function `
     Invoke-AGTAAgentAuthoring, `
     Invoke-AGTAAgentTool, `
     Get-AGTAOpenAITools
-Export-ModuleMember -Function Get-AGTAExplorationPaths, Initialize-AGTAExploration, Add-AGTAExplorationCommand, Complete-AGTAExplorationStep, Complete-AGTAExploration, Test-AGTAExploration, Test-AGTAExplorationCommandSucceeded, Get-AGTAExplorationStatus, Get-AGTAExplorationVerificationInfo, Get-AGTAExplorationWorkflow
+Export-ModuleMember -Function Resolve-AGTACommandArguments, Get-AGTAExplorationPaths, Initialize-AGTAExploration, Add-AGTAExplorationCommand, Complete-AGTAExplorationStep, Complete-AGTAExploration, Test-AGTAExploration, Test-AGTAExplorationCommandSucceeded, Get-AGTAExplorationStatus, Get-AGTAExplorationVerificationInfo, Get-AGTAExplorationWorkflow

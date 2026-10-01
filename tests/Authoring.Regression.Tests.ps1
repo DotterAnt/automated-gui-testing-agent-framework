@@ -204,6 +204,8 @@ $app=New-Object -ComObject Example.Application
     }
     "Authoring checks: $script:checks passed"
 } finally {
+    . (Join-Path $frameworkRoot 'Framework\ExplorationHost.ps1')
+    foreach ($folder in @($batchRoot,$savedRoot) | Where-Object {$_}) {Invoke-AGTAExplorationHost $folder @{} -Stop | Out-Null}
     $resolved=[IO.Path]::GetFullPath($root)
     $parent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
     if ($resolved.StartsWith($parent,[StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolved) -like 'agta-authoring-*') { Remove-Item -LiteralPath $resolved -Recurse -Force }

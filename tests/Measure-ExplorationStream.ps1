@@ -19,7 +19,7 @@ try {
     $request='[{"stepIndex":1,"command":"state","arguments":[]}]'
     $watch=[Diagnostics.Stopwatch]::StartNew()
     for ($i=0;$i -lt $Count;$i++) {
-        $response=$request | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $single -RequestsStdin | ConvertFrom-Json
+        $response=$request | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $single -RequestsStdin -Transport InProcess | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0 -or -not $response.ok -or -not $response.explorationCommandId) {throw 'Cold exploration failed'}
     }
     $singleMs=$watch.ElapsedMilliseconds
@@ -30,7 +30,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or $responses.Count -ne $Count+1 -or @($responses | Where-Object {-not $_.ok}).Count) {throw 'Warm exploration failed'}
     $requests=ConvertTo-Json -InputObject @(1..$Count | ForEach-Object {@{stepIndex=1;command='state';arguments=@()}}) -Depth 5 -Compress
     $watch.Restart()
-    $responses=@($requests | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $batch -RequestsStdin | ForEach-Object {$_ | ConvertFrom-Json})
+    $responses=@($requests | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $batch -RequestsStdin -Transport InProcess | ForEach-Object {$_ | ConvertFrom-Json})
     $batchMs=$watch.ElapsedMilliseconds
     if ($LASTEXITCODE -ne 0 -or $responses.Count -ne $Count -or @($responses | Where-Object {-not $_.ok}).Count) {throw 'Combined exploration failed'}
     $result=@{command='state';count=$Count;coldBatchesMs=$singleMs;persistentBatchesMs=$streamMs;oneCombinedBatchMs=$batchMs;
