@@ -1,5 +1,7 @@
 # Automated GUI Testing Agent Framework
 
+For the fastest exploration path, register the local `Invoke-ExplorationMcp.ps1` stdio server once, then use its `agta_explore` and `agta_help` tools. It keeps the framework/CLI in one process and avoids a fresh shell/client per tool request while retaining validation and receipts. [MCP setup and usage](docs/MCP.md). Direct shell calls below remain the fallback.
+
 For CSV authoring, read `AGENTS.md`, `docs/AUTHORING.md`, the supplied CSV and the generated template together. In PowerShell shell tools, call `& .\Invoke-Exploration.ps1` directly with `-RequestsJson` for batches, rather than spawning another powershell.exe and piping encoded text. Auto retains the worker; direct invocation also avoids a cold client. Use `RecordSteps` for reviewed receipts and `Status` for progress. `Complete` exports tested command routes for reuse. The template's `Invoke-AGTATestPlan` handles sequencing, dependent skips, cleanup and result output. The contract and source modules are references for specific unresolved questions.
 
 PowerShell-only framework for turning CSV testcase descriptions into repeatable GUI automation scripts that use `potato-cli`.

@@ -2,6 +2,8 @@
 
 Read this guide, the supplied CSV and templates/GeneratedScript.Template.ps1 together. Use targeted help for missing signatures. The full contract/source are references for concrete unresolved questions.
 
+If `agta_explore`/`agta_help` MCP tools are available, prefer them: `agta_help` topic authoring with testCaseCsv returns this guide, template and supplied CSV together; `agta_explore` accepts Begin/Batch/RecordSteps/Status/Complete as structured arguments. Keep desktop requests sequential and use the same verification/cleanup workflow below. The persistent process avoids outer shell/client startup per request. After a failed batch, inspect Status/GUI before recovery. See `docs/MCP.md` for one-time setup. The shell examples below apply when MCP is unavailable.
+
 ## Finish the workflow
 
 Perform every CSV row through the GUI, including save, close/reopen, print/export and content assertions. Record each fully verified row, then Complete after cleanup. Generate, execute and repair until the delivered revision passes all rows, assertions and cleanup. Preflight alone is not a passed test. Incomplete exploration means resume missing rows. Recover boundedly and continue; stop only on explicit instruction or a concrete external blocker. Never invent evidence or weaken expectations.
@@ -12,7 +14,7 @@ Perform every CSV row through the GUI, including save, close/reopen, print/expor
 & .\Invoke-Exploration.ps1 -Action Begin -RunRoot .\runs\walkthrough-unique -TestCaseCsv '<supplied.csv>'
 ~~~
 
-Keep the returned absolute RunRoot and explorationEvidenceRoot. Begin saves CSV/CLI/policy configuration. Its evidence directory already exists; use it for exploration filenames. Execution uses Context.ExecutionEvidenceRoot. Keep full paths and add type -PathKind SaveFile/OpenFile for filename fields. Extra subfolders must already exist. Infrastructure preparation does not create expected outputs; the GUI must create them.
+Keep the returned absolute RunRoot and explorationEvidenceRoot. Begin saves CSV/CLI/policy configuration. Its evidence directory already exists; use it directly for exploration filenames unless the testcase requires a subfolder. Execution uses Context.ExecutionEvidenceRoot. Avoid a separate shell mkdir just to organize a few outputs. Keep full paths and add type -PathKind SaveFile/OpenFile for filename fields. Required extra subfolders must already exist. Infrastructure preparation does not create expected outputs; the GUI must create them.
 
 ## Batch known routes
 
