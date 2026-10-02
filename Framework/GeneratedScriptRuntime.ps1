@@ -745,9 +745,13 @@ function Invoke-RecordedStep {
     }
     catch {
         $failure = $_.Exception.Message
+        $failureLine=([string]$_.InvocationInfo.Line).Trim()
+        if ($failureLine.Length -gt 240) {$failureLine=$failureLine.Substring(0,240)+'...'}
+        $failureLocation=@{file=$_.InvocationInfo.ScriptName;line=$_.InvocationInfo.ScriptLineNumber;command=$failureLine;stack=@($_.ScriptStackTrace -split "`r?`n" | Select-Object -First 3)}
         # Preserve the failing state before cleanup; a capture error must not mask it.
         try { Invoke-EvidenceScreenshot -Commands ([ref]$commands) -Evidence ([ref]$evidence) -FileName ("step-{0}-failure.png" -f $StepIndex) | Out-Null } catch {}
         $result = New-StepResult -StepIndex $StepIndex -Action $step.Action -ExpectedResult $step.'Expected Result' -Status 'FAIL' -Evidence $evidence -Commands $commands -ErrorObject $failure
+        $result | Add-Member -NotePropertyName location -NotePropertyValue $failureLocation
     }
     finally {$context.ActiveStep=$previousStep}
     $result | Add-Member -NotePropertyName assertions -NotePropertyValue @($script:AGTAStepAssertions)

@@ -143,7 +143,7 @@ try {
     (Get-Content $path -Raw).Replace('$State=@{value=0}','$State=@{value=99}') | Set-Content $path
     Reject {Invoke-AGTAPlanStep $session} 'Setup reload silently reset live variables.' | Out-Null
     $closed=Close-AGTAPlanSession $session
-    Check ($session.closed -and $closed.updateError -match 'setup/helpers') 'Invalid edited setup prevented owned cleanup.'
+    Check ($session.closed -and $closed.updateError -match 'setup changed') 'Invalid edited setup prevented owned cleanup.'
     @{ok=$true;checks=$script:checks;psVersion=$PSVersionTable.PSVersion.ToString()} | ConvertTo-Json -Compress
 } finally {
     foreach ($session in $sessions) {Remove-Module $session.module -ErrorAction SilentlyContinue}

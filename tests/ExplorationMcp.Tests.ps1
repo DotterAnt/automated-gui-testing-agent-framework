@@ -52,9 +52,17 @@ try {
     Check ($unknown.error.code -eq -32602) 'Unknown tool was not a protocol error.'
     $unknown=Rpc 'unknown/method' @{}
     Check ($unknown.error.code -eq -32601) 'Unknown method was not a protocol error.'
-    $liveDefault=Join-Path $root 'default-live'
-    $response=Tool @{action='Begin';runRoot=$liveDefault;testCaseCsv=$csv;potatoCliPath=$cli}
-    Check ((Values $response)[0].workflowMode -eq 'Live' -and (Values $response)[0].replayAvailable) 'MCP did not default to an explicit available live route.'
+    $exploreDefault=Join-Path $root 'default-explore'
+    $response=Tool @{action='Begin';runRoot=$exploreDefault;testCaseCsv=$csv;potatoCliPath=$cli}
+    Check ((Values $response)[0].workflowMode -eq 'RecordedBatch' -and (Values $response)[0].next -match 'no script is required') 'MCP did not default to exploration before code generation.'
+    $response=Tool @{action='Batch';runRoot=$exploreDefault;requests=@(@{stepIndex=1;command='help';arguments=@('-Topic','start')})}
+    Check (-not $response.result.isError) 'MCP default required a saved script before exploration.'
+    $response=Tool @{action='Replay';replayAction='Start';runRoot=$exploreDefault;scriptPath=(Join-Path $root 'not-yet-generated.ps1')}
+    Check ($response.result.isError -and (Values $response)[0].error -match 'Explore first') 'MCP default silently skipped exploration and entered incremental guessing.'
+    Check (-not (Values $response)[0].location) 'Routine workflow rejection padded the response with redundant source/stack scaffolding.'
+    $liveDefault=Join-Path $root 'explicit-live'
+    $response=Tool @{action='Begin';runRoot=$liveDefault;testCaseCsv=$csv;potatoCliPath=$cli;workflowMode='Live'}
+    Check ((Values $response)[0].workflowMode -eq 'Live' -and (Values $response)[0].replayAvailable) 'MCP lost explicit live development.'
     $response=Tool @{action='Batch';runRoot=$liveDefault;requests=@(@{stepIndex=1;command='click';arguments=@('-Name','MustNotDispatch')})}
     Check ($response.result.isError -and (Values $response)[0].error -match 'saved body' -and -not (Test-Path (Join-Path $liveDefault 'logs\exploration-commands.jsonl'))) 'Default live workflow silently dispatched a separate GUI walkthrough.'
     $response=Tool @{action='Batch';runRoot=$liveDefault;requests=@(@{stepIndex=1;command='state';arguments=@()})}
@@ -195,7 +203,7 @@ exit (Get-AGTATestExitCode)
     $rowCsv=Join-Path $root 'repair-rows.csv'
     'Action,Data,Expected Result','First,,Fixture','Second,,Fixture' | Set-Content $rowCsv
     $rowRun=Join-Path $root 'repair-rows'
-    Tool @{action='Begin';runRoot=$rowRun;testCaseCsv=$rowCsv;potatoCliPath=$cli} | Out-Null
+    Tool @{action='Begin';runRoot=$rowRun;testCaseCsv=$rowCsv;potatoCliPath=$cli;workflowMode='Live'} | Out-Null
     $rowPath=Join-Path $root 'repair-rows.ps1'
     ($templatePrefix+@'
 $StepBodies=@(
@@ -228,7 +236,7 @@ exit (Get-AGTATestExitCode)
         $title='AGTA MCP fixture '+[guid]::NewGuid().ToString('N')
         $child=& (Join-Path $PSScriptRoot 'support\Start-ArgumentFixture.ps1') $root $title -Menus
         $guiRun=Join-Path $root 'gui'
-        Tool @{action='Begin';runRoot=$guiRun;testCaseCsv=$csv;potatoCliPath=$cli;workflowMode='RecordedBatch'} | Out-Null
+        Tool @{action='Begin';runRoot=$guiRun;testCaseCsv=$csv;potatoCliPath=$cli} | Out-Null
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
             @{stepIndex=1;command='focus';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title,'-TimeoutMs','10000')},
             @{stepIndex=1;command='windows';arguments=@('-Foreground','-WindowTitle',$title,'-TimeoutMs','3000')})}
@@ -287,13 +295,18 @@ exit (Get-AGTATestExitCode)
             Check (-not $response.result.isError -and (Values $response)[-1].data.count -eq 1) 'MCP did not close the actual menu dialog through its visible button.'
         }
         $liveGuiRun=Join-Path $root 'live-gui'
-        Tool @{action='Begin';runRoot=$liveGuiRun;testCaseCsv=$csv;potatoCliPath=$cli} | Out-Null
+        Tool @{action='Begin';runRoot=$liveGuiRun;testCaseCsv=$csv;potatoCliPath=$cli;workflowMode='Live'} | Out-Null
         $liveGuiPath=Join-Path $root 'live-gui.ps1'
         $liveGuiSource=@'
 [CmdletBinding()]
 param([string]$PotatoCliPath,[string]$TestCaseCsv,[string]$RunRoot,[string]$FrameworkRoot,[string]$ExplorationPath,[string]$InteractionPolicy='GuiNavigation',[string]$Transport='InProcess',[string]$OutputMode='Compact')
 . (Join-Path $FrameworkRoot 'Framework\GeneratedScriptRuntime.ps1')
 $Context=Initialize-AGTAGeneratedTest -PotatoCliPath $PotatoCliPath -TestCaseCsv $TestCaseCsv -RunRoot $RunRoot -ExplorationPath $ExplorationPath -InteractionPolicy $InteractionPolicy -Transport $Transport
+function Invoke-FixtureClick {
+    param([ref]$Commands,$scope)
+    $clicked=Invoke-StepCommand $Commands click ($scope+@('-Name','Missing fixture field','-TimeoutMs','0'))
+    Assert-PotatoOk $clicked
+}
 $StepBodies=@({param([ref]$Commands,[ref]$Evidence)
     $window=Invoke-StepCommand $Commands windows @('-Foreground','-WindowTitle',TITLE_LITERAL,'-TimeoutMs','3000')
     Assert-PotatoFound $window
@@ -301,8 +314,7 @@ $StepBodies=@({param([ref]$Commands,[ref]$Evidence)
     $shot=Invoke-StepCommand $Commands screenshot ($scope+@('-OutFile',(Join-Path $Context.ExecutionEvidenceRoot 'live.png')))
     Assert-PotatoOk $shot
     Add-EvidencePath $Evidence $shot.data.path
-    $clicked=Invoke-StepCommand $Commands click ($scope+@('-Name','Missing fixture field','-TimeoutMs','0'))
-    Assert-PotatoOk $clicked
+    Invoke-FixtureClick $Commands $scope
     $field=Invoke-StepCommand $Commands select ($scope+@('-Name','Fixture filename','-TimeoutMs','0'))
     Assert-PotatoFound $field
 })
@@ -328,7 +340,7 @@ exit (Get-AGTATestExitCode)
         Check (-not $repair.result.isError -and $repairValues.Count -eq 2 -and $repairValues[0].stepIndex -eq 1 -and $repairValues[1].nextStepIndex -eq 1 -and $repairReceipt.stepIndex -eq 1) 'Actual MCP GUI repair lost its explicit CSV row or advanced the pending body.'
         $liveGuiSource.Replace('Missing fixture field','Fixture filename') | Set-Content $liveGuiPath
         $liveRetry=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Step';runRoot=$liveGuiRun}}
-        Check (-not $liveRetry.result.isError -and (Values $liveRetry)[0].status -eq 'RECOVERY_SUCCESS' -and -not (Values $liveRetry)[0].countsAsSuccessfulStep) 'MCP did not reload/retry only the failed body.'
+        Check (-not $liveRetry.result.isError -and (Values $liveRetry)[0].status -eq 'RECOVERY_SUCCESS' -and -not (Values $liveRetry)[0].countsAsSuccessfulStep -and (Values $liveRetry)[0].resultPath -eq (Values $liveStart)[0].resultPath) 'MCP did not reload the edited helper in the same retained GUI session.'
         $liveClosed=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Close';runRoot=$liveGuiRun}}
         Check (-not $liveClosed.result.isError -and -not (Values $liveClosed)[0].qualifying -and -not (Test-Path (Join-Path $liveGuiRun 'results\result.json'))) 'MCP published diagnostic recovery as a clean result.'
         Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='focus';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title)})} | Out-Null

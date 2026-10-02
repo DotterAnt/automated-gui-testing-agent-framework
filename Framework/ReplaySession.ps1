@@ -33,6 +33,17 @@ function Get-AGTAPlanDefinition {
     if ($suffix.Count -ne 2 -or $suffix[0].Extent.Text -notmatch '^Invoke-AGTATestPlan\s+-StepBodies\s+\$StepBodies(?:\s+-OutputMode\s+\$OutputMode)?\s*$' -or
         $suffix[1].Extent.Text -notmatch '^exit\s+\(Get-AGTATestExitCode\)\s*$') {throw 'Keep the template Invoke-AGTATestPlan and exit driver after StepBodies; put testcase actions inside the step bodies.'}
     $prefix=$source.Substring(0,$assignment.Extent.StartOffset)
+    if (-not $ast.ParamBlock) {throw 'Use the generated template parameter block for a live plan.'}
+    $setupParts=@($prefix.Substring(0,$ast.ParamBlock.Extent.EndOffset))
+    $helpers=@(foreach ($statement in $ast.EndBlock.Statements) {
+        if ($statement.Extent.StartOffset -ge $assignment.Extent.StartOffset) {continue}
+        if ($statement -is [Management.Automation.Language.FunctionDefinitionAst]) {
+            $helperName=$statement.Name -replace '^script:',''
+            if ($helperName.Contains(':')) {throw 'Plan helpers must use the local module scope, not global/private/local qualifiers.'}
+            @{name=$helperName;ast=$statement;text=$statement.Extent.Text}
+        } else {$setupParts+=$statement.Extent.Text}
+    })
+    if (@($helpers.name | Sort-Object -Unique).Count -ne $helpers.Count) {throw 'Plan helpers must have unique names.'}
     foreach ($call in @($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst]},$true))) {
         if ($call.Extent.StartOffset -ge $assignment.Extent.StartOffset) {continue}
         $parent=$call.Parent;$deferred=$false
@@ -51,11 +62,11 @@ function Get-AGTAPlanDefinition {
     }
     $hash=[Security.Cryptography.SHA256]::Create()
     try {
-        $setupHash=[BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($prefix))).Replace('-','')
+        $setupHash=[BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($setupParts -join "`n")))).Replace('-','')
+        $helpersHash=[BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($helpers.text -join "`n")))).Replace('-','')
         $scriptHash=[BitConverter]::ToString($hash.ComputeHash($bytes)).Replace('-','')
     } finally {$hash.Dispose()}
-    if (-not $ast.ParamBlock) {throw 'Use the generated template parameter block for a live plan.'}
-    @{path=$ScriptPath;prefix=$prefix;bodies=$bodies;setupHash=$setupHash;scriptHash=$scriptHash}
+    @{path=$ScriptPath;prefix=$prefix;bodies=$bodies;helpers=$helpers;helpersHash=$helpersHash;setupHash=$setupHash;scriptHash=$scriptHash}
 }
 
 function Import-AGTAPlanSession {
@@ -84,6 +95,10 @@ function Import-AGTAPlanSession {
             $prefixAst=[Management.Automation.Language.Parser]::ParseInput($definition.prefix,$definition.path,[ref]$prefixTokens,[ref]$prefixErrors)
             . ($prefixAst.GetScriptBlock()) @parameters | Out-Null
             $script:StepBodies=@(foreach ($body in $script:AGTAPlanDefinition.bodies) {[scriptblock]::Create($body.Substring(1,$body.Length-2))})
+            # New-Module otherwise imports all these functions into the MCP
+            # caller, leaving stale exported copies after helper removal and
+            # allowing one plan's runtime/context to shadow another's.
+            Export-ModuleMember -Function @()
         }
         $context=& $module {Get-AGTAGeneratedTestContext}
         if ($context.RunRoot -ne $RunRoot -or $context.TestCaseCsv -ne $manifest.testCasePath -or $context.InteractionPolicy -ne $manifest.interactionPolicy -or $context.RunKind -ne $RunKind -or -not $context.RequireAssertions) {throw 'Plan setup changed the saved run configuration or disabled required assertions.'}
@@ -98,7 +113,7 @@ function Update-AGTAPlanSession {
     param($Session)
     $definition=Get-AGTAPlanDefinition $Session.scriptPath
     if ($definition.scriptHash -eq $Session.definition.scriptHash) {return}
-    if ($definition.setupHash -ne $Session.definition.setupHash) {throw 'Plan setup/helpers changed. Close this session before starting a new one; continuing would lose or reinterpret live variables and ownership. Step-body edits can be reloaded in place.'}
+    if ($definition.setupHash -ne $Session.definition.setupHash) {throw 'Plan setup changed. Close this session before starting a new one; initializers cannot be re-executed over live state. Body and helper-function edits reload in place.'}
     $ctx=$Session.context
     $audit=Test-AGTAGeneratedScript -ScriptPath $Session.scriptPath -TestCaseCsv $ctx.TestCaseCsv -PotatoCliPath $ctx.PotatoCliPath -ExplorationPath $ctx.ExplorationPath -InteractionPolicy $ctx.InteractionPolicy -AllowIncompleteExploration
     if (-not $audit.ok) {throw ('Plan preflight failed: '+($audit.issues -join '; '))}
@@ -106,7 +121,18 @@ function Update-AGTAPlanSession {
     foreach ($index in $Session.executedBodies.Keys) {
         if ($Session.executedBodies[$index] -cne $definition.bodies[$index-1]) {$Session.tainted=$true}
     }
-    & $Session.module {param($definition) $script:StepBodies=@(foreach ($body in $definition.bodies) {[scriptblock]::Create($body.Substring(1,$body.Length-2))});$script:AGTAPlanDefinition=$definition} $definition
+    if ($definition.helpersHash -ne $Session.definition.helpersHash -and $Session.executedBodies.Count) {$Session.tainted=$true}
+    & $Session.module {
+        param($definition)
+        foreach ($helper in $script:AGTAPlanDefinition.helpers) {
+            if ($helper.name -notin @($definition.helpers.name)) {Remove-Item -LiteralPath ('Function:\'+$helper.name) -ErrorAction Stop}
+        }
+        foreach ($helper in $definition.helpers) {
+            Set-Item -LiteralPath ('Function:\script:'+$helper.name) -Value ($helper.ast.Body.GetScriptBlock())
+        }
+        $script:StepBodies=@(foreach ($body in $definition.bodies) {[scriptblock]::Create($body.Substring(1,$body.Length-2))})
+        $script:AGTAPlanDefinition=$definition
+    } $definition
     $Session.definition=$definition
     $Session.context.SourceScriptHash=$definition.scriptHash
 }
@@ -137,6 +163,7 @@ function Invoke-AGTAPlanStep {
     $attempt=[ordered]@{stepIndex=$StepIndex;attempt=$attemptNumber;attemptId=$Session.context.AttemptId;scriptHash=$Session.definition.scriptHash;
         status=$(if ($passed -and $firstAttempt) {'FIRST_ATTEMPT_SUCCESS'} elseif ($passed) {'RECOVERY_SUCCESS'} else {'DIAGNOSTIC_FAILURE'});
         firstAttempt=$firstAttempt;countsAsSuccessfulStep=($passed -and $firstAttempt);error=$result.error;evidence=$result.evidence;assertions=$result.assertions;commands=$result.commands}
+    if ($result.location) {$attempt.location=$result.location}
     $Session.attempts+=,$attempt
     $Session.executedBodies[$StepIndex]=$Session.definition.bodies[$StepIndex-1]
     if ($passed) {$Session.results+=,$result;$Session.nextStepIndex++} else {$Session.tainted=$true;$Session.needsReview=$true}
@@ -144,19 +171,21 @@ function Invoke-AGTAPlanStep {
     $lastFailure=@($result.commands | Where-Object {-not $_.ok} | Select-Object -Last 1)
     $firstAction=@($result.commands | Where-Object {$_.ok -and $_.command -in @('start','focus','click','click-coordinate','type','press-key','hotkey','drag','close-window')} | Select-Object -First 1)
     $receiptIds=@($result.commands | Where-Object {$_.verification.eligible -and (-not $firstAction.Count -or $_.index -gt $firstAction[0].index)} | ForEach-Object {$_.explorationCommandId})
-    [ordered]@{ok=$passed;runKind='Diagnostic';qualifying=$false;stepIndex=$StepIndex;attempt=$attemptNumber;status=$attempt.status;
+    $response=[ordered]@{ok=$passed;runKind='Diagnostic';qualifying=$false;stepIndex=$StepIndex;attempt=$attemptNumber;status=$attempt.status;
         countsAsSuccessfulStep=$attempt.countsAsSuccessfulStep;nextStepIndex=$Session.nextStepIndex;error=$result.error;
         verificationCommandIds=$receiptIds;evidence=@($result.evidence | Select-Object -Last 2);evidenceCount=@($result.evidence).Count;failedCommands=$lastFailure;
         images=@($result.commands | Where-Object {$_.command -eq 'screenshot' -and $_.path} | Select-Object -Last $(if ($passed) {2} else {1}) | ForEach-Object {@{path=$_.path;region=$_.region;format=$_.format}});
         resultPath=$Session.context.ResultPath;commandLogPath=$Session.context.CommandLogPath;
-        next=$(if ($passed) {'Review evidence, RecordSteps if exploring, then develop/run the next body. Close when done.'} else {'Status retains the live failure. Inspect, edit the failed body and restore its entry state with Repair; retry Step or explicitly Skip. Do not restart passed rows.'})}
+        next=$(if ($passed) {'Continue the next row. RecordSteps only if still exploring; Close when done.'} else {'Status retains live state. Edit bodies/helpers in place. Repair the failed action and finish this row, then Skip with a reason and continue Step; alternatively restore row entry state before retrying Step. Do not Close/Start for helper edits.'})}
+    if ($result.location) {$response.location=$result.location}
+    $response
 }
 
 function Invoke-AGTAPlanVerification {
     param($Session)
     do {$value=Invoke-AGTAPlanStep $Session} while ($value.ok -and $Session.nextStepIndex -le $Session.context.Steps.Count)
     if ($value.ok) {return Close-AGTAPlanSession $Session}
-    $value.next='Verification stopped at this failed body and kept the live app/session. Call Replay Status, edit/Repair and retry Replay Step; continue pending rows, Close, then make one clean Verify. Repeated Verify is blocked while this session owns the desktop.'
+    $value.next='Verification stopped and kept the live app/session. Status, edit bodies/helpers, Repair the failed action and finish this row live, then Skip with a reason and continue Step. Alternatively restore row entry state before retrying Step. Close after recovery, then one clean Verify.'
     $value.firstAttemptSuccesses=@($Session.attempts | Where-Object {$_.countsAsSuccessfulStep} | ForEach-Object {@{stepIndex=$_.stepIndex;status=$_.status;countsAsSuccessfulStep=$true}})
     $value
 }
@@ -207,7 +236,7 @@ function Get-AGTAPlanStatus {
         attempts=@($Session.attempts | ForEach-Object {@{stepIndex=$_.stepIndex;attempt=$_.attempt;status=$_.status;countsAsSuccessfulStep=$_.countsAsSuccessfulStep;error=$_.error}});
         commands=@(Get-AGTACommandDiagnostics -Path $Session.context.CommandLogPath -Last 3);
         resultPath=$Session.context.ResultPath;executionEvidenceRoot=$Session.context.ExecutionEvidenceRoot;
-        next='Inspect retained evidence. Repair GUI input requires its actual CSV stepIndex. Restore entry state and retry Step, or Skip a manually completed pending row to advance; Skip never counts as PASS.'}
+        next='Inspect retained evidence. Bodies/helpers reload in place. Repair with the actual CSV stepIndex, finish the pending row live, then Skip with a reason and continue Step. Alternatively restore entry state before retrying its body. Skip never counts as PASS.'}
 }
 
 function Close-AGTAPlanSession {

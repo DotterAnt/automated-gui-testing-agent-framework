@@ -1,6 +1,6 @@
 # Persistent exploration tools
 
-`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell. It exposes `agta_explore`, `agta_replay`, `agta_inspect`, `agta_help` and read-only `agta_validate`. One process retains state/ownership. Version 1.3.1 fixes setup path validation, preserves setup source locations and requires explicit CSV row attribution for input Repair. Live remains the default, with replay also available through agta_explore and failed Verify sessions retained. Reconnect after updating. CSV/policy, receipt and assertion checks apply; no app-specific routes or extra packages are needed.
+`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell. It exposes `agta_explore`, `agta_replay`, `agta_inspect`, `agta_help` and read-only `agta_validate`. One process retains state/ownership. Version 1.4.0 defaults to recorded exploration before code generation and reloads top-level replay helper functions without restarting setup. Plan functions remain isolated from the server. Failed Verify retains live state; first-attempt success qualifies without duplicate execution. Reconnect after updating. CSV/policy, receipt and assertion checks apply; no app-specific routes or extra packages are needed.
 
 The server exposes GuiNavigation and VisibleControls by default. It rejects AllowShortcuts even with a nonempty policyReason and blocks mutations of older permissive runs; Status remains available for diagnosis. A model-written explanation is not user authorization. Application actions such as Open/Print must use visible menu/button routes. The operator may add `-EnableShortcutPolicy` to server startup only for an explicitly authorized shortcut task; tools cannot enable that capability, and per-run PolicyReason is still required. Do not add this flag for ordinary GUI tests. These are authoring checks, not an execution sandbox for arbitrary shell code.
 
@@ -18,26 +18,26 @@ tool_timeout_sec = 180
 
 Codex documents stdio servers and the shared desktop/CLI/IDE configuration in [its MCP guide](https://developers.openai.com/codex/mcp/). The configuration belongs on the interactive test machine, where the CLI/framework and applications are installed. Adjust the script path if needed. Start a new agent chat/reconnect the integration after configuration or code updates; verify that `agta_explore` and `agta_help` are available. The server is launched by the MCP client; do not manually start it in a terminal or wrap each request in a shell command. No HTTP listener is involved. The launch's Bypass affects that process only, so it does not require changing machine-wide execution policy.
 
-## Live authoring
+## Replay after exploration
 
-Read `agta_help` topic authoring with the CSV once. Begin exploration, write the actual template StepBodies incrementally, and use agta_replay Start/Step. Failure keeps the live state: Status, Repair, retry the failed body or explicitly Skip for diagnostic continuation. Record reviewed receipts with agta_explore RecordSteps. Close qualifies an uninterrupted unchanged first-attempt session without replaying it twice. Repaired sessions need a final clean Verify. Use agta_inspect instead of raw log dumps. See [AUTHORING.md](AUTHORING.md) and, only for session details, [LIVE_REPLAY.md](LIVE_REPLAY.md).
+Read `agta_help` topic authoring with the CSV once. Begin/Batch explores real controls before any script is needed; review RecordSteps, clean owned windows and Complete. Generate the replay from those receipts and use agta_replay Verify once. Failure keeps live state: Status, edit bodies/helpers, Repair the failed action, finish the row live and explicitly Skip it for diagnostic continuation, then Step through remaining rows. Alternatively restore row entry state before retrying Step. Close cleans up; recovery needs one final clean Verify. Successful first-attempt full execution qualifies immediately. See [AUTHORING.md](AUTHORING.md) and, only for recovery details, [LIVE_REPLAY.md](LIVE_REPLAY.md).
 
 Replay is also available through the established exploration tool:
 
 ~~~json
-{"action":"Replay","replayAction":"Start","runRoot":"<existing absolute run folder>","scriptPath":"<absolute saved template path>"}
+{"action":"Replay","replayAction":"Verify","runRoot":"<completed exploration root>","scriptPath":"<absolute generated script path>"}
 ~~~
 
-Use replayAction Step/Status/Repair/Skip/Close/Verify on that same runRoot. Input Repair must include `stepIndex` for the actual CSV row; Repair does not advance the plan. Retry Step, or Skip a manually completed pending row with a reason. Tool arguments are literal values, so pass an observed JSON selector object rather than a PowerShell variable name. Default Live mode allows only read-only Batch discovery. Unqualified script revisions are blocked from standalone full replay before GUI dispatch. Once the final revision qualifies, that exact delivered script can run standalone. Failed Verify retains the live session and blocks another full Verify until review/recovery/Close. Existing manifests without workflowMode retain compatibility behavior.
+Use replayAction Step/Status/Repair/Skip/Close on that same runRoot after failure. Input Repair must include `stepIndex` for the actual CSV row; it does not advance the plan. Bodies and top-level helper functions reload in place; parameters/initializers/imports require Close/Start. Tool arguments are literal JSON values. Failed Verify blocks another full Verify until recovery/Close. Explicit Begin workflowMode Live retains the optional saved-body discovery flow: Batch is read-only and unqualified revisions cannot run standalone. Existing manifests retain their saved mode; use a new run for the new default.
 
-## Legacy recorded batches
+## Recorded exploration (default)
 
-The following separate-walkthrough flow requires explicit workflowMode RecordedBatch on Begin. Without MCP, the shell entrypoint retains this fallback. A missing agta_replay name alone does not require it; agta_explore Replay reaches the same session.
+Begin defaults to RecordedBatch. The shell entrypoint uses the same recorded exploration flow when MCP is unavailable. agta_explore Replay also reaches the replay session if the separate agta_replay name is unavailable.
 
 Prefer these tools when available. Call `agta_help` with `{"topic":"authoring","testCaseCsv":"<absolute supplied CSV path>"}` to read the guide, template and CSV together once; do not duplicate those reads through shell calls. Guide/template are plain strings without PowerShell provider metadata. Then:
 
 ~~~json
-{"action":"Begin","workflowMode":"RecordedBatch","runRoot":"<unique absolute run folder>","testCaseCsv":"<absolute supplied CSV path>"}
+{"action":"Begin","runRoot":"<unique absolute run folder>","testCaseCsv":"<absolute supplied CSV path>"}
 ~~~
 
 Pass these arguments to `agta_explore`; keep its returned runRoot and explorationEvidenceRoot. Batch uses the same command objects as the shell/stream:

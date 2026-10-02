@@ -15,10 +15,10 @@ $planSessions=@{}
 $availablePolicies=@('GuiNavigation','VisibleControls')
 if ($EnableShortcutPolicy) {$availablePolicies+=,'AllowShortcuts'}
 $tools=@(
-    @{name='agta_explore';description='Begin once, then develop the actual saved StepBodies live using action Replay with replayAction Start/Step/Status/Repair/Close/Verify, or agta_replay. Live is the default; Batch is read-only discovery, RecordSteps reviews real verification receipts. GUI input belongs in tested saved bodies or recorded live Repair. Do not translate a separate walkthrough or repeatedly run scripts through the shell. RecordedBatch is an explicit legacy mode. Use visible controls; agent reasons cannot authorize shortcuts.';
+    @{name='agta_explore';description='Explore first: Begin, Batch observed GUI actions, review RecordSteps, clean owned windows, Complete. No saved script is needed for exploration. Then generate the replay from tested receipts and run it once through Replay Verify; failure retains the app for Status/Repair/Step/Skip recovery. Use visible controls; agent reasons cannot authorize shortcuts.';
         inputSchema=@{type='object';required=@('action','runRoot');additionalProperties=$false;properties=@{
             action=@{type='string';enum=@('Begin','Batch','RecordSteps','Status','Complete','Replay')};runRoot=@{type='string'};
-            workflowMode=@{type='string';enum=@('Live','RecordedBatch');description='Begin only. Live is default. RecordedBatch explicitly selects the old separate walkthrough when required.'};
+            workflowMode=@{type='string';enum=@('RecordedBatch','Live');description='Begin only. RecordedBatch is default: explore before writing code. Live explicitly opts into saved-body development; Batch is read-only in Live.'};
             replayAction=@{type='string';enum=@('Start','Step','Repair','Skip','Status','Close','Verify');description='Required with action Replay; identical to agta_replay action.'};
             scriptPath=@{type='string'};stepIndex=@{type='integer';minimum=1;description='Replay Repair: required for GUI input; actual CSV row for receipts. Does not advance the pending row.'};reason=@{type='string'};
             testCaseCsv=@{type='string'};potatoCliPath=@{type='string'};
@@ -35,10 +35,10 @@ $tools=@(
             topic=@{type='string';enum=@('authoring','cli','runtime')};testCaseCsv=@{type='string';description='Authoring context can include the supplied CSV alongside the guide/template.'};names=@{type='array';minItems=1;maxItems=20;items=@{type='string'}};
             detail=@{type='string';enum=@('signatures','full');description='Targeted help defaults to compact signatures; request full only for unresolved behavior.'}
         }}}
-    @{name='agta_replay';description='Develop the actual template StepBodies in a persistent live session. Start loads setup without running steps; Step executes only the next body and retains failures/app state. Edit bodies in the saved script, inspect Status, repair live with sequential CLI requests, then retry Step or explicitly Skip. First-attempt successes count; Close qualifies an unchanged, unrepaired all-row first-attempt session without rerunning it. Repaired sessions remain diagnostic; Verify performs one clean full replay after cleanup. Do not invoke generated scripts repeatedly through the shell.';
+    @{name='agta_replay';description='After recorded exploration, Verify runs the saved script once and stops at failure with live state retained. Inspect Status, edit bodies/helpers in place, Repair the failed action with its CSV stepIndex, then Step after restoring row entry state or Skip a manually finished row and continue. Do not Close/Start for selector/helper edits or restart successful rows. First-attempt successes count; clean full execution qualifies without repetition. Repaired sessions remain diagnostic and need one final clean Verify.';
         inputSchema=@{type='object';required=@('action','runRoot');additionalProperties=$false;properties=@{
             action=@{type='string';enum=@('Start','Step','Repair','Skip','Status','Close','Verify')};runRoot=@{type='string'};
-            scriptPath=@{type='string';description='Absolute template-based script path for Start/Verify; Step reloads only saved body edits.'};
+            scriptPath=@{type='string';description='Absolute template-based script path for Start/Verify; Step reloads saved bodies and helper functions without resetting state.'};
             stepIndex=@{type='integer';minimum=1;description='Step: next pending row. Repair: required for GUI input, identifies the actual CSV row for receipts; does not advance the plan.'};reason=@{type='string';description='Required for diagnostic Skip.'};
             requests=@{type='array';minItems=1;maxItems=20;items=@{type='object';required=@('command','arguments');additionalProperties=$false;properties=@{command=@{type='string'};arguments=@{type='array'}}}};
             includeImages=@{type='boolean';description='Return up to two retained screenshot evidence files inline; default true.'}
@@ -94,7 +94,7 @@ function Invoke-McpTool($Name,$Arguments) {
         if ($Arguments.action -eq 'Batch' -and $LASTEXITCODE -ne 0) {$reviewRequired[$runKey]=$true}
         if ($Arguments.action -eq 'Status' -and $LASTEXITCODE -eq 0) {$reviewRequired.Remove($runKey)}
         if ($Arguments.action -eq 'Begin' -and $LASTEXITCODE -eq 0) {
-            $mode=if ($Arguments.workflowMode) {$Arguments.workflowMode} else {'Live'}
+            $mode=if ($Arguments.workflowMode) {$Arguments.workflowMode} else {'RecordedBatch'}
             $savedManifest=[IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
             $savedManifest | Add-Member -NotePropertyName workflowMode -NotePropertyValue $mode -Force
             $savedManifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
@@ -103,7 +103,7 @@ function Invoke-McpTool($Name,$Arguments) {
             $begin.PSObject.Properties.Remove('steps')
             $begin | Add-Member -NotePropertyName workflowMode -NotePropertyValue $mode -Force
             $begin | Add-Member -NotePropertyName replayAvailable -NotePropertyValue $true -Force
-            $begin.next=if ($mode -eq 'Live') {'Save template bodies incrementally, then use nextCall and Replay Step (or agta_replay Start/Step). Live replay is available through either name. Batch is read-only; RecordSteps reviews receipts. Close qualifies clean first attempts. No standalone retries during authoring.'} else {'RecordedBatch explicitly selected. Explore with Batch, review RecordSteps, clean owned windows, Complete, then generate the replay. Live Replay remains available.'}
+            $begin.next=if ($mode -eq 'Live') {'Explicit Live mode: save bodies incrementally and use Replay Start/Step. Batch is read-only. Bodies/helpers reload without resetting state; initializers require Close/Start. Review RecordSteps and Close to qualify clean first attempts.'} else {'Explore now with Batch; no script is required. Use observed controls and real row indices, review RecordSteps, clean owned windows, Complete. Only then generate from tested receipts and call Replay Verify once. Failed Verify retains state for recovery.'}
             if ($mode -eq 'Live') {$begin | Add-Member nextCall @{tool='agta_explore';arguments=@{action='Replay';replayAction='Start';runRoot=$runKey;scriptPath='<absolute saved template path>'}} -Force}
             $begin.workflow.nextAction=$begin.next
             $responses[-1]=$begin | ConvertTo-Json -Depth 80 -Compress
@@ -128,17 +128,19 @@ function Invoke-McpTool($Name,$Arguments) {
         if ($Arguments.includeImages -and $Arguments.includeImages -isnot [bool]) {throw 'includeImages must be Boolean.'}
         $runKey=[IO.Path]::GetFullPath($Arguments.runRoot)
         $session=$planSessions[$runKey]
-        $manifest=[IO.File]::ReadAllText((Join-Path $runKey 'logs\exploration.json')) | ConvertFrom-Json
+        $manifestPath=Join-Path $runKey 'logs\exploration.json'
+        $manifest=[IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
         if ($manifest.interactionPolicy -eq 'AllowShortcuts' -and -not $EnableShortcutPolicy) {throw 'Shortcut authorization is disabled in this MCP server.'}
         switch -CaseSensitive ($Arguments.action) {
             'Start' {
                 if (@($planSessions.Values | Where-Object {-not $_.closed}).Count) {throw 'Close the existing live plan before starting another desktop session.'}
+                if ($manifest.workflowMode -eq 'RecordedBatch' -and -not (Test-AGTAExploration -Path $manifestPath -TestCaseCsv $manifest.testCasePath -InteractionPolicy $manifest.interactionPolicy).ok) {throw 'Explore first with Batch, review RecordSteps, clean owned windows and Complete before Replay Start/Verify. Do not write guessed selectors before observing the UI.'}
                 if (-not $Arguments.scriptPath -or -not [IO.Path]::IsPathRooted($Arguments.scriptPath)) {throw 'Start needs absolute scriptPath.'}
                 if ($session) {Remove-Module $session.module -ErrorAction SilentlyContinue}
                 $session=Import-AGTAPlanSession $runKey $Arguments.scriptPath
                 $planSessions[$runKey]=$session
                 Save-AGTAPlanSession $session
-                $value=@{ok=$true;runKind='Diagnostic';qualifying=$false;nextStepIndex=1;executionEvidenceRoot=$session.context.ExecutionEvidenceRoot;resultPath=$session.context.ResultPath;next='Write/test the next body with Step. Variables and paths persist. Record reviewed verificationCommandIds with agta_explore RecordSteps.'}
+                $value=@{ok=$true;runKind='Diagnostic';qualifying=$false;nextStepIndex=1;executionEvidenceRoot=$session.context.ExecutionEvidenceRoot;resultPath=$session.context.ResultPath;next='Run the next saved body with Step. Variables, paths and ownership persist; body/helper edits reload in place. RecordSteps only when still exploring.'}
             }
             'Step' {if (-not $session) {throw 'Start the live plan first.'};$value=Invoke-AGTAPlanStep $session -StepIndex $Arguments.stepIndex}
             'Repair' {if (-not $session) {throw 'Start the live plan first.'};$value=@(Invoke-AGTAPlanRepair $session $Arguments.requests -StepIndex $Arguments.stepIndex)}
@@ -259,7 +261,7 @@ while ($null -ne ($line=[Console]::ReadLine())) {
                     'initialize' {
                         if ($request.params.protocolVersion -isnot [string] -or -not $request.params.protocolVersion) {throw 'Initialize requires protocolVersion.'}
                         $version=if ($request.params.protocolVersion -in @('2024-11-05','2025-03-26','2025-06-18')) {$request.params.protocolVersion} else {'2025-06-18'}
-                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.3.1'}}
+                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.4.0'}}
                         $negotiated=$true;$ready=$false
                     }
                     'ping' {$reply.result=@{}}
@@ -272,7 +274,10 @@ while ($null -ne ($line=[Console]::ReadLine())) {
                             $failure=@{ok=$false;error=$_.Exception.Message;next='Inspect Status/actual GUI before retrying an uncertain dispatch.'}
                             $sourceLine=([string]$_.InvocationInfo.Line).Trim()
                             if ($sourceLine.Length -gt 240) {$sourceLine=$sourceLine.Substring(0,240)+'...'}
-                            $failure.location=@{file=$_.InvocationInfo.ScriptName;line=$_.InvocationInfo.ScriptLineNumber;command=$sourceLine;stack=@($_.ScriptStackTrace -split "`r?`n" | Select-Object -First 3)}
+                            $savedPath=$request.params.arguments.scriptPath
+                            if ($_.CategoryInfo.Category -ne 'OperationStopped' -or ($savedPath -and $_.ScriptStackTrace -match [regex]::Escape($savedPath))) {
+                                $failure.location=@{file=$_.InvocationInfo.ScriptName;line=$_.InvocationInfo.ScriptLineNumber;command=$sourceLine;stack=@($_.ScriptStackTrace -split "`r?`n" | Select-Object -First 3)}
+                            }
                             $reply.result=@{content=@(@{type='text';text=($failure | ConvertTo-Json -Depth 8 -Compress)});isError=$true}
                         }
                     }

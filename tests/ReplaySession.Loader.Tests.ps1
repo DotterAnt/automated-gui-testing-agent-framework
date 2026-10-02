@@ -18,8 +18,12 @@ try {
     $source=$prefix+@'
 if (-not $PotatoCliPath) {$PotatoCliPath=Join-Path (Split-Path $FrameworkRoot) 'potato-cli\potato.ps1'}
 $State=@{OutputPath=Join-Path $Context.ExecutionEvidenceRoot 'fixture.out';Self=$PSCommandPath;Root=$PSScriptRoot;SystemPath=Join-Path $env:WINDIR 'fixture.input'}
+function Get-FixtureEnvironment {
+    Join-Path $env:WINDIR 'fixture.input'
+}
 $StepBodies=@({param([ref]$Commands,[ref]$Evidence)
     Assert-ExpectedResult (-not [string]::IsNullOrWhiteSpace($State.OutputPath)) 'Output path retained'
+    Assert-ExpectedResult ((Get-FixtureEnvironment) -eq $State.SystemPath) 'Environment path retained in helper'
 })
 Invoke-AGTATestPlan -StepBodies $StepBodies -OutputMode $OutputMode
 exit (Get-AGTATestExitCode)
@@ -29,6 +33,9 @@ exit (Get-AGTATestExitCode)
     Check ((& $session.module {$State.OutputPath}) -eq (Join-Path $session.context.ExecutionEvidenceRoot 'fixture.out')) 'Template Context/path setup was not retained.'
     Check ((& $session.module {$State.Self}) -eq $path -and (& $session.module {$State.Root}) -eq $root) 'Parsed setup lost automatic script file/root bindings.'
     Check ((& $session.module {$State.SystemPath}) -eq (Join-Path $env:WINDIR 'fixture.input')) 'Environment path setup did not survive the module loader.'
+    $step=Invoke-AGTAPlanStep $session
+    Check $step.ok ('Helper lost environment during actual step execution: '+$step.error)
+    $session.tainted=$true # Loader fixture supplies no GUI route for qualification.
     Close-AGTAPlanSession $session | Out-Null;Remove-Module $session.module;$session=$null
     foreach ($dispatch in @('Invoke-PotatoJson state @()', '& $PotatoCliPath state', "& (Join-Path 'C:\fixture' 'potato.ps1') state")) {
         $source.Replace('$StepBodies=@(',($dispatch+"`n"+'$StepBodies=@(')) | Set-Content $path
