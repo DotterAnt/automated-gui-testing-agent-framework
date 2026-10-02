@@ -72,6 +72,9 @@ try {
         '$pdf = "%PDF-1.4"',
         'Start-Process "expected.document"',
         'Set-Clipboard "text"'
+        '[System.Drawing.Graphics]::FromImage($bitmap)'
+        '$graphics.DrawLine($pen,1,2,3,4)'
+        '$python = "from PIL import ImageDraw; draw = ImageDraw.Draw(image)"'
         'Invoke-CimMethod -InputObject $device -MethodName SetDefaultPrinter'
         'Invoke-WmiMethod -Class Example -Name Mutate'
         'Set-CimInstance -InputObject $device -Property @{Enabled=$true}'
@@ -86,6 +89,8 @@ try {
     Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Read-only content assertion was blocked.'
     'Get-CimInstance -ClassName Win32_Printer | Select-Object Name,Default' | Set-Content $scriptPath
     Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Read-only system-state verification was blocked.'
+    '$bitmap = [Drawing.Bitmap]::new($existingPath); $pixel = $bitmap.GetPixel(1,2); $bitmap.Dispose()' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Read-only image verification was confused with synthetic content generation.'
     'Invoke-StepCommand -Commands $Commands -Command type -Arguments @("-Text", "INSERT INTO Records VALUES (1)")' | Set-Content $scriptPath
     Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Literal SQL text typed through the GUI was confused with a database mutation.'
     # The runtime must catch the bypass even if standalone preflight is omitted.

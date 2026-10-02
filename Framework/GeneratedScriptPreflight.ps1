@@ -6,7 +6,7 @@ function Get-AGTARuntimeHelp {
     $published = @(
         'Initialize-AGTAGeneratedTest', 'Invoke-RecordedStep', 'Invoke-StepCommand', 'Invoke-StepClick', 'Invoke-AGTATestPlan',
         'Assert-PotatoOk', 'Assert-PotatoFound', 'Assert-FileWait',
-        'Assert-ExpectedResult', 'Assert-TextContains', 'Read-AGTAArtifactBytes', 'Read-AGTAZipText', 'Assert-ZipTextContains', 'Assert-ArtifactPrefix',
+        'Assert-ExpectedResult', 'Assert-TextContains', 'Read-AGTAArtifactBytes', 'Read-AGTAZipText', 'Assert-ZipTextContains', 'Assert-ArtifactPrefix', 'Assert-ImageContainsColors',
         'Invoke-EvidenceScreenshot', 'Add-EvidencePath', 'Register-OpenedProcess',
         'Register-CreatedExternalPath', 'Invoke-TestCleanup',
         'Complete-AGTAGeneratedTest', 'Get-AGTATestExitCode',
@@ -36,6 +36,7 @@ function Get-AGTARuntimeHelp {
                 Read-AGTAZipText {'Returns an array of {name,text} entries, not a CLI result. MaxBytes limits total uncompressed content. Use Assert-ZipTextContains for raw archive text, or assert entry.text explicitly; do not pass entries to Assert-TextContains.'}
                 Assert-ZipTextContains {'Reads actual matching ZIP entries and asserts raw text fragments with ordinal comparison and normalized CR/LF. Optional ExpectedEntryCount asserts cardinality. XML entities are not decoded; use a read-only parser for semantic XML assertions.'}
                 Assert-TextContains {'Result must be a successful CLI read/read-pdf envelope with content provenance. For archive entries use Assert-ZipTextContains; plain strings and {name,text} objects are not CLI results.'}
+                Assert-ImageContainsColors {'Read-only shared decode and compiled pixel scan, bounded by MaxBytes/MaxPixels. ColorRanges objects: name,rMin,rMax,gMin,gMax,bMin,bMax,aMin (RGB defaults 0..255, aMin defaults 1). Each needs MinimumPixels. ExpectedFormat checks actual signature/decoded format, not extension. PassThru returns counts/dimensions. Color presence alone does not prove shape, layout, record count or correct GUI creation.'}
                 Invoke-StepCommand {'*Json option values may be strings or objects; objects are serialized before CLI invocation.'}
                 default {$null}
             }
@@ -138,6 +139,10 @@ function Test-AGTAGeneratedScript {
         }
     }
     foreach ($memberCall in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst]}, $true))) {
+        if (($memberCall.Static -and $memberCall.Member.Extent.Text -eq 'FromImage' -and $memberCall.Expression.Extent.Text -match '^\[(?:System\.)?Drawing\.Graphics\]$') -or
+            $memberCall.Member.Extent.Text -match '^(?i:DrawLine|DrawLines|DrawRectangle|DrawEllipse|DrawString|FillRectangle|FillEllipse|FillPolygon)$') {
+            $issues += "Line $($memberCall.Extent.StartLineNumber): drawing image contents in code substitutes generated data for the tested GUI action. Create required contents through the GUI; existing input fixtures and read-only image inspection are separate from expected outputs."
+        }
         if ($memberCall.Member.Extent.Text -match '^(?i:SendWait|SendText|SendInput|mouse_event|SetCursorPos|GetActiveObject|GetTypeFromProgID|CreateInstance|ExecuteNonQuery|SetValue)$') {
             $issues += "Line $($memberCall.Extent.StartLineNumber): direct '$($memberCall.Member.Extent.Text)' can bypass GUI input or create expected data. Use the CLI for actions and read-only artifact checks for verification."
         }
@@ -157,6 +162,9 @@ function Test-AGTAGeneratedScript {
         }
         if ($literal.Value -match '(?i)\bExecuteNonQuery\s*\(|\b(?:SendInput|SendWait|GetActiveObject|GetTypeFromProgID)\s*\(|New-Object\s+-ComObject\b|System\.Drawing\.Printing\.PrintDocument|\b(?:reportlab|fpdf)\b|%PDF-\d') {
             $issues += "Line $($literal.Extent.StartLineNumber): embedded mutation/input/artifact-generation code requires removal; expected outputs must be produced through the tested GUI."
+        }
+        if ($literal.Value -match '(?i)\bImageDraw\.(?:Draw|line|rectangle|ellipse)\s*\(|\bGraphics\]::FromImage\s*\(|\.DrawLine\s*\(') {
+            $issues += "Line $($literal.Extent.StartLineNumber): embedded image drawing fabricates testcase content outside the GUI. Use recorded mouse actions; render/inspect actual outputs read-only for verification."
         }
     }
     return [pscustomobject]@{ok=($issues.Count -eq 0);issues=@($issues | Select-Object -Unique);checkedCommands=$checked;policyAssessment='Static checks and recorded CLI actions; not an execution sandbox.'}

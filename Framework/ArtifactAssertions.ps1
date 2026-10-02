@@ -1,3 +1,5 @@
+. (Join-Path $PSScriptRoot 'ImageAssertions.ps1')
+
 function Assert-TextContains {
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Result,

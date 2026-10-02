@@ -84,8 +84,8 @@ try {
     Check (-not $complete.result.isError -and (Values $complete)[0].replayReferencePath -and (Test-Path -LiteralPath (Values $complete)[0].replayReferencePath)) 'MCP did not seal and export a verified fixture run.'
     $response=Tool @{action='Status';runRoot=$run}
     Check (-not $response.result.isError -and (Values $response)[0].commandCount -eq 2 -and -not $server.HasExited) 'Completing another run killed the server or changed this run.'
-    $help=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='runtime';names=@('Invoke-StepCommand','Assert-ZipTextContains')}}
-    Check (-not $help.result.isError -and $help.result.content[0].text -match 'Invoke-StepCommand' -and $help.result.content[0].text -match 'ExpectedEntryCount') 'Targeted runtime help failed to publish the ZIP content assertion.'
+    $help=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='runtime';names=@('Invoke-StepCommand','Assert-ZipTextContains','Assert-ImageContainsColors')}}
+    Check (-not $help.result.isError -and $help.result.content[0].text -match 'Invoke-StepCommand' -and $help.result.content[0].text -match 'ExpectedEntryCount' -and $help.result.content[0].text -match 'ColorRanges') 'Targeted runtime help failed to publish the content assertions.'
     $help=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='cli';names=@('type')}}
     Check (-not $help.result.isError -and $help.result.content[0].text -match 'PathKind') 'Targeted CLI help failed.'
     $help=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='authoring';testCaseCsv=$csv}}
