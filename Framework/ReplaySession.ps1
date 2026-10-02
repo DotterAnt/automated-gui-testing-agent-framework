@@ -82,6 +82,7 @@ function Import-AGTAPlanSession {
         }
         $context=& $module {Get-AGTAGeneratedTestContext}
         if ($context.RunRoot -ne $RunRoot -or $context.TestCaseCsv -ne $manifest.testCasePath -or $context.InteractionPolicy -ne $manifest.interactionPolicy -or $context.RunKind -ne $RunKind -or -not $context.RequireAssertions) {throw 'Plan setup changed the saved run configuration or disabled required assertions.'}
+        $context.SourceScriptPath=$definition.path;$context.SourceScriptHash=$definition.scriptHash
         @{module=$module;definition=$definition;context=$context;nextStepIndex=1;attempts=@();results=@();repairs=@();executedBodies=@{};
             needsReview=$false;tainted=$false;closed=$false;qualified=$false;cleanup=@();finalResult=$null;
             activeMs=0L;diagnosticResultPath=$context.ResultPath;scriptPath=$ScriptPath;runRoot=$RunRoot}
@@ -102,6 +103,7 @@ function Update-AGTAPlanSession {
     }
     & $Session.module {param($definition) $script:StepBodies=@(foreach ($body in $definition.bodies) {[scriptblock]::Create($body.Substring(1,$body.Length-2))});$script:AGTAPlanDefinition=$definition} $definition
     $Session.definition=$definition
+    $Session.context.SourceScriptHash=$definition.scriptHash
 }
 
 function Save-AGTAPlanSession {
@@ -143,6 +145,15 @@ function Invoke-AGTAPlanStep {
         images=@($result.commands | Where-Object {$_.command -eq 'screenshot' -and $_.path} | Select-Object -Last $(if ($passed) {2} else {1}) | ForEach-Object {@{path=$_.path;region=$_.region;format=$_.format}});
         resultPath=$Session.context.ResultPath;commandLogPath=$Session.context.CommandLogPath;
         next=$(if ($passed) {'Review evidence, RecordSteps if exploring, then develop/run the next body. Close when done.'} else {'Status retains the live failure. Inspect, edit the failed body and restore its entry state with Repair; retry Step or explicitly Skip. Do not restart passed rows.'})}
+}
+
+function Invoke-AGTAPlanVerification {
+    param($Session)
+    do {$value=Invoke-AGTAPlanStep $Session} while ($value.ok -and $Session.nextStepIndex -le $Session.context.Steps.Count)
+    if ($value.ok) {return Close-AGTAPlanSession $Session}
+    $value.next='Verification stopped at this failed body and kept the live app/session. Call Replay Status, edit/Repair and retry Replay Step; continue pending rows, Close, then make one clean Verify. Repeated Verify is blocked while this session owns the desktop.'
+    $value.firstAttemptSuccesses=@($Session.attempts | Where-Object {$_.countsAsSuccessfulStep} | ForEach-Object {@{stepIndex=$_.stepIndex;status=$_.status;countsAsSuccessfulStep=$true}})
+    $value
 }
 
 function Invoke-AGTAPlanRepair {

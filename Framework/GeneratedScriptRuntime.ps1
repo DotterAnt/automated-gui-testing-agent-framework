@@ -45,6 +45,12 @@ function Initialize-AGTAGeneratedTest {
         if (-not $scriptAudit.ok) { throw ('Generated script audit failed before desktop use: '+($scriptAudit.issues -join '; ')) }
     }
     if (-not $ExplorationPath) { $ExplorationPath=Join-Path $RunRoot 'logs\exploration.json' }
+    $savedExploration=if ([IO.File]::Exists($ExplorationPath)) {[IO.File]::ReadAllText($ExplorationPath) | ConvertFrom-Json} else {$null}
+    if ($savedExploration.workflowMode -eq 'Live' -and $script:AGTAPlanSessionKind -notin @('Diagnostic','Replay')) {
+        if (-not $callerPath -or $savedExploration.liveReplayValidatedScriptHash -ne (Get-FileHash -LiteralPath $callerPath -Algorithm SHA256).Hash) {
+            throw 'This MCP Live authoring run has no qualifying result for this script revision. Use agta_explore action Replay with replayAction Start/Step, or Verify; failures retain the live session for recovery. Standalone replay is available after the final revision qualifies.'
+        }
+    }
     if ($script:AGTAPlanSessionKind -eq 'Diagnostic') {$RunKind='Diagnostic'}
     $exploration=Test-AGTAExploration -Path $ExplorationPath -TestCaseCsv $TestCaseCsv -InteractionPolicy $InteractionPolicy -AllowIncomplete:($RunKind -eq 'Diagnostic')
     if (-not $exploration.ok) { throw ('Complete GUI exploration is required before execution: '+($exploration.issues -join '; ')) }
@@ -99,6 +105,8 @@ function Initialize-AGTAGeneratedTest {
         LastCommandTiming = $null
         FinalOk = $false
         RunKind = $RunKind
+        SourceScriptPath = $null
+        SourceScriptHash = $null
         ActiveStep = 0
         AttemptId = $null
         RecordExploration = ($RunKind -eq 'Diagnostic' -and -not $exploration.completedAt)
@@ -839,6 +847,14 @@ function Complete-AGTAGeneratedTest {
     $final | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath $context.ResultPath -Encoding UTF8
     if ($context.RunKind -eq 'Replay') {
         $final | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath (Join-Path $context.ResultsRoot ("replay-$($context.ExecutionId).json")) -Encoding UTF8
+    }
+    if ($ok -and $context.RunKind -eq 'Replay' -and $context.SourceScriptPath -and $context.SourceScriptHash -eq (Get-FileHash -LiteralPath $context.SourceScriptPath -Algorithm SHA256).Hash) {
+        $manifest=[IO.File]::ReadAllText($context.ExplorationPath) | ConvertFrom-Json
+        if ($manifest.workflowMode -eq 'Live') {
+            $manifest | Add-Member -NotePropertyName liveReplayValidatedScriptHash -NotePropertyValue $context.SourceScriptHash -Force
+            $manifest | Add-Member -NotePropertyName liveReplayExecutionId -NotePropertyValue $context.ExecutionId -Force
+            $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $context.ExplorationPath -Encoding UTF8
+        }
     }
     if ($PassThru) { return [pscustomobject]$final }
     if ($OutputMode -eq 'Full') { $final | ConvertTo-Json -Depth 80 -Compress; return }

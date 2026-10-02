@@ -52,9 +52,16 @@ try {
     Check ($unknown.error.code -eq -32602) 'Unknown tool was not a protocol error.'
     $unknown=Rpc 'unknown/method' @{}
     Check ($unknown.error.code -eq -32601) 'Unknown method was not a protocol error.'
-    $response=Tool @{action='Begin';runRoot=$run;testCaseCsv=$csv;potatoCliPath=$cli}
+    $liveDefault=Join-Path $root 'default-live'
+    $response=Tool @{action='Begin';runRoot=$liveDefault;testCaseCsv=$csv;potatoCliPath=$cli}
+    Check ((Values $response)[0].workflowMode -eq 'Live' -and (Values $response)[0].replayAvailable) 'MCP did not default to an explicit available live route.'
+    $response=Tool @{action='Batch';runRoot=$liveDefault;requests=@(@{stepIndex=1;command='click';arguments=@('-Name','MustNotDispatch')})}
+    Check ($response.result.isError -and (Values $response)[0].error -match 'saved body' -and -not (Test-Path (Join-Path $liveDefault 'logs\exploration-commands.jsonl'))) 'Default live workflow silently dispatched a separate GUI walkthrough.'
+    $response=Tool @{action='Batch';runRoot=$liveDefault;requests=@(@{stepIndex=1;command='state';arguments=@()})}
+    Check (-not $response.result.isError) 'Default live workflow blocked bounded read-only discovery.'
+    $response=Tool @{action='Begin';runRoot=$run;testCaseCsv=$csv;potatoCliPath=$cli;workflowMode='RecordedBatch'}
     $begin=(Values $response)[0]
-    Check (-not $response.result.isError -and $begin.ok -and $begin.next -match 'agta_replay' -and $begin.mcpTiming) 'MCP Begin lost live plan guidance/configuration/timing.'
+    Check (-not $response.result.isError -and $begin.ok -and $begin.workflowMode -eq 'RecordedBatch' -and $begin.mcpTiming) 'MCP Begin lost explicit compatibility configuration/timing.'
     $replay=Join-Path $root 'replay.ps1';$marker=Join-Path $root 'must-not-exist.txt'
     ('Set-Content -LiteralPath '''+$marker.Replace("'","''")+''' -Value "must not execute"') | Set-Content -LiteralPath $replay
     $validation=Rpc 'tools/call' @{name='agta_validate';arguments=@{runRoot=$run;scriptPath=$replay}}
@@ -92,7 +99,7 @@ try {
     # Synthetic receipts test transport sealing only, not a user GUI task.
     . (Join-Path $frameworkRoot 'Framework\Exploration.ps1')
     $sealed=Join-Path $root 'sealed'
-    Tool @{action='Begin';runRoot=$sealed;testCaseCsv=$csv;potatoCliPath=$cli} | Out-Null
+    Tool @{action='Begin';runRoot=$sealed;testCaseCsv=$csv;potatoCliPath=$cli;workflowMode='RecordedBatch'} | Out-Null
     Add-AGTAExplorationCommand $sealed 1 click @() @{ok=$true} | Out-Null
     $verification=Add-AGTAExplorationCommand $sealed 1 read @() @{ok=$true;data=@{text='Unit fixture'}}
     $recorded=Tool @{action='RecordSteps';runRoot=$sealed;requests=@(@{stepIndex=1;route='Unit fixture route';observedResult='Unit fixture observation';verificationCommandIds=@($verification)})}
@@ -141,9 +148,15 @@ $StepBodies=@({param([ref]$Commands,[ref]$Evidence)
 Invoke-AGTATestPlan -StepBodies $StepBodies -OutputMode $OutputMode
 exit (Get-AGTATestExitCode)
 '@ | Set-Content $livePath
-    $startPlan=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Start';runRoot=$sealed;scriptPath=$livePath;includeImages=$false}}
+    $sealedManifestPath=Join-Path $sealed 'logs\exploration.json'
+    $sealedManifest=Get-Content $sealedManifestPath -Raw | ConvertFrom-Json
+    $sealedManifest | Add-Member workflowMode Live -Force
+    $sealedManifest | ConvertTo-Json -Depth 30 | Set-Content $sealedManifestPath
+    try {$ErrorActionPreference='Continue';$directOutput=(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $livePath -PotatoCliPath $cli -TestCaseCsv $csv -RunRoot $sealed -FrameworkRoot $frameworkRoot -ExplorationPath $sealedManifestPath 2>&1 | Out-String);$directExit=$LASTEXITCODE} finally {$ErrorActionPreference='Stop'}
+    Check ($directExit -ne 0 -and $directOutput -match 'MCP Live authoring') 'Unvalidated live authoring silently fell back to standalone full replay.'
+    $startPlan=Tool @{action='Replay';replayAction='Start';runRoot=$sealed;scriptPath=$livePath;includeImages=$false}
     $live=(Values $startPlan)[0]
-    Check (-not $startPlan.result.isError -and $live.nextStepIndex -eq 1 -and $live.runKind -eq 'Diagnostic') 'MCP failed to load template setup without exiting.'
+    Check (-not $startPlan.result.isError -and $live.nextStepIndex -eq 1 -and $live.runKind -eq 'Diagnostic') ('MCP failed to load template setup without exiting: '+$live.error)
     $stepPlan=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Step';runRoot=$sealed;includeImages=$false}}
     Check (-not $stepPlan.result.isError -and (Values $stepPlan)[0].countsAsSuccessfulStep -and (Values $stepPlan)[0].status -eq 'FIRST_ATTEMPT_SUCCESS') 'MCP lost first-attempt step results or persistent plan variables.'
     $inspection=Rpc 'tools/call' @{name='agta_inspect';arguments=@{runRoot=$sealed;source='replay';last=1}}
@@ -153,6 +166,26 @@ exit (Get-AGTATestExitCode)
     Check (-not $closePlan.result.isError -and $qualified.ok -and $qualified.qualifying -and $qualified.artifacts.executionMode -eq 'IncrementalFirstAttempt') 'MCP did not qualify an unrepaired session on Close.'
     $verifyPlan=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Verify';runRoot=$sealed;includeImages=$false}}
     Check (-not $verifyPlan.result.isError -and (Values $verifyPlan)[0].executionId -eq $qualified.executionId) 'MCP replayed already qualified steps unnecessarily.'
+    Check ((Get-Content $sealedManifestPath -Raw | ConvertFrom-Json).liveReplayValidatedScriptHash -eq (Get-FileHash $livePath).Hash) 'Clean qualification did not permit the delivered standalone revision.'
+    $directOutput=(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $livePath -PotatoCliPath $cli -TestCaseCsv $csv -RunRoot $sealed -FrameworkRoot $frameworkRoot -ExplorationPath $sealedManifestPath 2>&1 | Out-String)
+    Check ($LASTEXITCODE -eq 0 -and $directOutput -match '"ok":true') 'The verified delivered script could not run standalone.'
+    $cleanSource=Get-Content $livePath -Raw
+    $assertion="Assert-ExpectedResult (`$State.calls -eq 1) 'Fixture plan setup/body were invoked once'"
+    $cleanSource.Replace($assertion,'throw "verification fixture failure"') | Set-Content $livePath
+    $failedVerify=Tool @{action='Replay';replayAction='Verify';runRoot=$sealed;scriptPath=$livePath;includeImages=$false}
+    $failure=(Values $failedVerify)[0]
+    Check ($failedVerify.result.isError -and $failure.status -eq 'DIAGNOSTIC_FAILURE' -and $failure.next -match 'kept the live') 'Failed Verify cleaned/reset the live session instead of retaining it.'
+    $blocked=Tool @{action='Replay';replayAction='Verify';runRoot=$sealed;includeImages=$false}
+    Check ($blocked.result.isError -and (Values $blocked)[0].error -match 'Close the live') 'Repeated full Verify bypassed a retained failure.'
+    Tool @{action='Replay';replayAction='Status';runRoot=$sealed;includeImages=$false} | Out-Null
+    $cleanSource.Replace('State.calls -eq 1','State.calls -eq 2') | Set-Content $livePath
+    $recovered=Tool @{action='Replay';replayAction='Step';runRoot=$sealed;includeImages=$false}
+    Check (-not $recovered.result.isError -and (Values $recovered)[0].status -eq 'RECOVERY_SUCCESS') 'Verify recovery restarted setup rather than retaining live variables.'
+    $cleanSource | Set-Content $livePath
+    $closed=Tool @{action='Replay';replayAction='Close';runRoot=$sealed;includeImages=$false}
+    Check (-not (Values $closed)[0].qualifying) 'Verify recovery qualified as an unrepaired proper run.'
+    $verified=Tool @{action='Replay';replayAction='Verify';runRoot=$sealed;includeImages=$false}
+    Check (-not $verified.result.isError -and (Values $verified)[0].ok -and (Values $verified)[0].qualifying) 'Final clean Verify did not qualify after live recovery.'
     $fullHelp=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='cli';names=@('type');detail='full'}}
     $compactHelp=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='cli';names=@('type')}}
     Check (-not $fullHelp.result.isError -and $fullHelp.result.content[0].text.Length -gt $compactHelp.result.content[0].text.Length -and ($compactHelp.result.content[0].text | ConvertFrom-Json).data.commands.type.usage -match 'PathKind') 'Full behavioral help was unavailable or compact signatures were lost.'
@@ -162,7 +195,7 @@ exit (Get-AGTATestExitCode)
         $title='AGTA MCP fixture '+[guid]::NewGuid().ToString('N')
         $child=& (Join-Path $PSScriptRoot 'support\Start-ArgumentFixture.ps1') $root $title -Menus
         $guiRun=Join-Path $root 'gui'
-        Tool @{action='Begin';runRoot=$guiRun;testCaseCsv=$csv;potatoCliPath=$cli} | Out-Null
+        Tool @{action='Begin';runRoot=$guiRun;testCaseCsv=$csv;potatoCliPath=$cli;workflowMode='RecordedBatch'} | Out-Null
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
             @{stepIndex=1;command='focus';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title,'-TimeoutMs','10000')},
             @{stepIndex=1;command='windows';arguments=@('-Foreground','-WindowTitle',$title,'-TimeoutMs','3000')})}

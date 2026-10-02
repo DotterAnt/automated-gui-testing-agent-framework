@@ -223,6 +223,7 @@ function Get-AGTAExplorationWorkflow {
     $m=Get-Content -LiteralPath $paths.manifest -Raw | ConvertFrom-Json
     $missing=@(1..$m.stepCount | Where-Object {$_ -notin @($m.steps.stepIndex)})
     $next='Develop/test the next saved StepBodies row with agta_replay, or continue recorded Batch exploration. Review and record real verification receipts; incomplete exploration cannot qualify a full result.'
+    if ($m.workflowMode -eq 'Live') {$next='Live: Replay Start/Step tests saved bodies; Status/Repair handles failures. Batch is read-only. Review RecordSteps, then Close.'}
     if ($m.completed) {
         $next='Exploration is complete. A clean first-attempt live plan may already qualify on Close; otherwise Verify the final saved revision after cleanup. Preflight alone is not a passed test.'
     } elseif ($Command -in @('RecordStep','RecordSteps') -and $Result.ok -eq $false) {

@@ -76,6 +76,19 @@ exit (Get-AGTATestExitCode)
     $closed=Close-AGTAPlanSession $session
     Check ($closed.cleanupOk -and -not $closed.qualifying -and -not (Get-Process -Id $ownedId -ErrorAction SilentlyContinue)) 'Diagnostic close lost owned cleanup or qualification boundaries.'
     Complete-AGTAExploration $root $csv GuiNavigation | Out-Null
+    $source | Set-Content $path
+    $autoVerification=Import-AGTAPlanSession $root $path
+    $failedVerify=Invoke-AGTAPlanVerification $autoVerification
+    $verifyOwnedId=& $autoVerification.module {$State.started.data.ownedProcessId}
+    Check (-not $failedVerify.ok -and $failedVerify.stepIndex -eq 2 -and [bool](Get-Process -Id $verifyOwnedId -ErrorAction SilentlyContinue)) 'Failed full Verify did not keep its owned GUI at the failed second body.'
+    Check ($failedVerify.firstAttemptSuccesses.Count -eq 1 -and $failedVerify.firstAttemptSuccesses[0].stepIndex -eq 1) 'Failed Verify discarded the successful first-attempt prefix.'
+    Get-AGTAPlanStatus $autoVerification | Out-Null
+    $source.Replace('Missing button','Mark') | Set-Content $path
+    $retry=Invoke-AGTAPlanStep $autoVerification
+    $starts=@(Get-Content $autoVerification.context.CommandLogPath | ForEach-Object {$_ | ConvertFrom-Json} | Where-Object {$_.command -eq 'start'})
+    Check ($retry.ok -and $retry.status -eq 'RECOVERY_SUCCESS' -and $starts.Count -eq 1) 'Verify recovery reran startup instead of the failed body.'
+    $closed=Close-AGTAPlanSession $autoVerification
+    Check ($closed.cleanupOk -and -not $closed.qualifying -and -not (Get-Process -Id $verifyOwnedId -ErrorAction SilentlyContinue)) 'Recovered Verify lost diagnostic provenance or owned cleanup.'
     $verification=Import-AGTAPlanSession $root $path Replay
     $full=& $verification.module {Invoke-AGTATestPlan -StepBodies $script:StepBodies} | ConvertFrom-Json
     Check ($full.ok -and $full.qualifying -and $full.summary.passed -eq 2 -and $full.cleanupOk) 'One fresh full replay failed after successful live repair.'
@@ -83,7 +96,7 @@ exit (Get-AGTATestExitCode)
     Check (-not (Get-Process -Id $newId -ErrorAction SilentlyContinue)) 'Fresh replay left its owned fixture running.'
     @{ok=$true;checks=$script:checks;psVersion=$PSVersionTable.PSVersion.ToString()} | ConvertTo-Json -Compress
 } finally {
-    foreach ($live in @($session,$verification) | Where-Object {$_}) {
+    foreach ($live in @($session,$verification,$autoVerification) | Where-Object {$_}) {
         try {& $live.module {Invoke-TestCleanup} | Out-Null} catch {}
         Remove-Module $live.module -ErrorAction SilentlyContinue
     }

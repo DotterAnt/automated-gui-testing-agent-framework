@@ -1,6 +1,6 @@
 # Persistent exploration tools
 
-`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell. It exposes `agta_explore`, `agta_replay`, `agta_inspect`, `agta_help` and read-only `agta_validate`. One process retains live plan variables, ownership and CLI state. CSV/policy, argument, receipt and assertion checks still apply. No app-specific routes or additional package installation are needed. Server version 1.2.0 adds persistent step development; reconnect after updating both repositories.
+`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell. It exposes `agta_explore`, `agta_replay`, `agta_inspect`, `agta_help` and read-only `agta_validate`. One process retains state/ownership. Version 1.3.0 defaults MCP authoring to Live, also exposes replay through agta_explore, and retains failed Verify sessions. Reconnect after updating. CSV/policy, receipt and assertion checks apply; no app-specific routes or extra packages are needed.
 
 The server exposes GuiNavigation and VisibleControls by default. It rejects AllowShortcuts even with a nonempty policyReason and blocks mutations of older permissive runs; Status remains available for diagnosis. A model-written explanation is not user authorization. Application actions such as Open/Print must use visible menu/button routes. The operator may add `-EnableShortcutPolicy` to server startup only for an explicitly authorized shortcut task; tools cannot enable that capability, and per-run PolicyReason is still required. Do not add this flag for ordinary GUI tests. These are authoring checks, not an execution sandbox for arbitrary shell code.
 
@@ -22,14 +22,22 @@ Codex documents stdio servers and the shared desktop/CLI/IDE configuration in [i
 
 Read `agta_help` topic authoring with the CSV once. Begin exploration, write the actual template StepBodies incrementally, and use agta_replay Start/Step. Failure keeps the live state: Status, Repair, retry the failed body or explicitly Skip for diagnostic continuation. Record reviewed receipts with agta_explore RecordSteps. Close qualifies an uninterrupted unchanged first-attempt session without replaying it twice. Repaired sessions need a final clean Verify. Use agta_inspect instead of raw log dumps. See [AUTHORING.md](AUTHORING.md) and, only for session details, [LIVE_REPLAY.md](LIVE_REPLAY.md).
 
+Replay is also available through the established exploration tool:
+
+~~~json
+{"action":"Replay","replayAction":"Start","runRoot":"<existing absolute run folder>","scriptPath":"<absolute saved template path>"}
+~~~
+
+Use replayAction Step/Status/Repair/Skip/Close/Verify on that same runRoot. Default Live mode allows only read-only Batch discovery; GUI input must come from saved bodies or live Repair. Unqualified script revisions are blocked from standalone full replay before GUI dispatch. Once the final revision qualifies, that exact delivered script can run standalone. Failed Verify retains the live session and blocks another full Verify until review/recovery/Close. Existing manifests without workflowMode retain compatibility behavior.
+
 ## Legacy recorded batches
 
-The following separate-walkthrough flow is the fallback when live replay tools are unavailable.
+The following separate-walkthrough flow requires explicit workflowMode RecordedBatch on Begin. Without MCP, the shell entrypoint retains this fallback. A missing agta_replay name alone does not require it; agta_explore Replay reaches the same session.
 
 Prefer these tools when available. Call `agta_help` with `{"topic":"authoring","testCaseCsv":"<absolute supplied CSV path>"}` to read the guide, template and CSV together once; do not duplicate those reads through shell calls. Guide/template are plain strings without PowerShell provider metadata. Then:
 
 ~~~json
-{"action":"Begin","runRoot":"<unique absolute run folder>","testCaseCsv":"<absolute supplied CSV path>"}
+{"action":"Begin","workflowMode":"RecordedBatch","runRoot":"<unique absolute run folder>","testCaseCsv":"<absolute supplied CSV path>"}
 ~~~
 
 Pass these arguments to `agta_explore`; keep its returned runRoot and explorationEvidenceRoot. Batch uses the same command objects as the shell/stream:
