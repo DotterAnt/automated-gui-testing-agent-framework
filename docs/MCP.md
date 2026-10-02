@@ -1,6 +1,6 @@
 # Persistent exploration tools
 
-`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell and the existing exploration entrypoint. It exposes two tools, `agta_explore` and `agta_help`. One process stays loaded; requests avoid both outer shell-tool startup and cold PowerShell clients. CSV/policy validation, argument normalization, actual receipts, batch failure boundaries, recording eligibility and completion checks still run in `Invoke-Exploration.ps1` with InProcess transport. No app-specific routes are built in. No additional package/runtime installation is needed.
+`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell and the existing exploration entrypoint. It exposes `agta_explore`, `agta_help` and read-only `agta_validate`. One process stays loaded; requests avoid both outer shell-tool startup and cold PowerShell clients. CSV/policy validation, argument normalization, actual receipts, batch failure boundaries, recording eligibility and completion checks still run in `Invoke-Exploration.ps1` with InProcess transport. No app-specific routes are built in. No additional package/runtime installation is needed.
 
 The server exposes GuiNavigation and VisibleControls by default. It rejects AllowShortcuts even with a nonempty policyReason and blocks mutations of older permissive runs; Status remains available for diagnosis. A model-written explanation is not user authorization. Application actions such as Open/Print must use visible menu/button routes. The operator may add `-EnableShortcutPolicy` to server startup only for an explicitly authorized shortcut task; tools cannot enable that capability, and per-run PolicyReason is still required. Do not add this flag for ordinary GUI tests. These are authoring checks, not an execution sandbox for arbitrary shell code.
 
@@ -41,6 +41,8 @@ Every verification ID must follow that row's successful GUI action; recording or
 For closure, use a Batch windows command with the exact owned WindowIdentityJson/tested selector, WaitForNotExists and a bounded TimeoutMs; assert data.conditionMet. Confirmed disappearance is eligible evidence. Plain windows with a positive TimeoutMs waits for appearance, so count 0 after a close wastes the deadline and is ineligible. Every ID in RecordSteps must be eligible.
 
 Targeted signatures: `agta_help` with `{"topic":"cli","names":["type","observe"]}` or `{"topic":"runtime","names":["Invoke-StepCommand","Assert-TextContains"]}`. Do not read entire contracts/modules or unrelated testcase examples speculatively. The shell/direct and interactive stream transports remain available when MCP tools are unavailable.
+
+After Complete and generation, call `agta_validate` with `{"runRoot":"<existing absolute exploration root>","scriptPath":"<absolute replay.ps1>"}`. This uses the saved CSV/CLI/policy/manifest and parses the replay without executing it. It rejects incomplete exploration and policy/signature/assertion issues, returns the checked script hash, and always reports replayExecuted/taskComplete false. A parser-only check cannot replace full preflight or the actual replay. Execute the checked revision and inspect its assertions and cleanup result.
 
 ## Timing and diagnosis
 

@@ -130,6 +130,25 @@ function Test-AGTAGeneratedScript {
             }
         }
     }
+    # Follow simple screenshot/path metadata aliases without evaluating code.
+    # A compound expression is not automatically a content assertion: both
+    # Test-Path and a nonzero Length can still describe an empty/useless capture.
+    $screenshotMetadata=@{}
+    foreach ($key in $screenshotPaths.Keys) {$screenshotMetadata[$key]=$true}
+    $assignments=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst]},$true))
+    for ($pass=0;$pass -lt $assignments.Count;$pass++) {
+        $added=$false
+        foreach ($assignment in $assignments) {
+            if ($assignment.Left -isnot [Management.Automation.Language.VariableExpressionAst]) {continue}
+            $key=$assignment.Left.VariablePath.UserPath
+            if ($screenshotMetadata.ContainsKey($key)) {continue}
+            $variables=@($assignment.Right.FindAll({param($node) $node -is [Management.Automation.Language.VariableExpressionAst]},$true))
+            if (-not @($variables | Where-Object {$screenshotMetadata.ContainsKey($_.VariablePath.UserPath)}).Count) {continue}
+            if (Test-AGTAScreenshotMetadataExpression $assignment.Right $screenshotMetadata) {$screenshotMetadata[$key]=$true;$added=$true}
+        }
+        if (-not $added) {break}
+    }
+    $hasStepBodies=@($assignments | Where-Object {$_.Left -is [Management.Automation.Language.VariableExpressionAst] -and $_.Left.VariablePath.UserPath -match '^(?:(?:script|local):)?StepBodies$'}).Count -gt 0
     $checked = 0
     foreach ($call in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst]}, $true))) {
         $name = $call.GetCommandName()
@@ -142,14 +161,9 @@ function Test-AGTAGeneratedScript {
                 if ($condition -and $condition.Extent.Text -match '^\s*\(*\s*\$true\s*\)*\s*$') {
                     $issues+="Line $($condition.Extent.StartLineNumber): Assert-ExpectedResult -Condition `$true always passes and cannot verify a GUI result. Assert actual readback/content or a measured postcondition; a saved screenshot alone is evidence, not an automated assertion."
                 }
-                if ($condition -and -not $condition.Find({param($node) $node -is [Management.Automation.Language.BinaryExpressionAst]},$true)) {
-                    $pathChecks=@($condition.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Test-Path'},$true))
-                    foreach ($pathCheck in $pathChecks) {
-                        $shotVariables=@($pathCheck.FindAll({param($node) $node -is [Management.Automation.Language.VariableExpressionAst] -and $screenshotPaths.ContainsKey($node.VariablePath.UserPath)},$true))
-                        if ($shotVariables.Count) {
-                            $issues+="Line $($condition.Extent.StartLineNumber): screenshot existence cannot verify its contents or count as an expected-result assertion. Add the screenshot as evidence and compare its observed image region with Assert-ImageRegionMatches or assert actual content readback."
-                        }
-                    }
+                if ($condition -and $condition.Find({param($node) $node -is [Management.Automation.Language.VariableExpressionAst] -and $screenshotMetadata.ContainsKey($node.VariablePath.UserPath)},$true) -and
+                    (Test-AGTAScreenshotMetadataExpression $condition $screenshotMetadata)) {
+                    $issues+="Line $($condition.Extent.StartLineNumber): screenshot existence/file metadata cannot verify its contents or count as an expected-result assertion. Add the screenshot as evidence and compare its observed image region with Assert-ImageRegionMatches or assert actual content readback."
                 }
             }
         }
@@ -192,6 +206,14 @@ function Test-AGTAGeneratedScript {
             $issues += "Line $($call.Extent.StartLineNumber): generated scripts must not compile/load private input backends. Use type, press-key, or relative click through the CLI."
         }
         if ($name -eq 'Start-Process') { $issues += "Line $($call.Extent.StartLineNumber): use recorded CLI start for executable launches and the GUI Open route for documents; direct Start-Process bypasses ownership and route checks." }
+        $fileCommand=$name
+        if ($fileCommand -in @('mv','move','mi','cp','copy','cpi','ren','rni','rm','del','erase','rd','ri','rmdir')) {
+            $alias=Get-Command $fileCommand -CommandType Alias -ErrorAction SilentlyContinue
+            if ($alias) {$fileCommand=$alias.ResolvedCommand.Name}
+        }
+        if ($fileCommand -in @('Move-Item','Copy-Item','Rename-Item') -or ($hasStepBodies -and $fileCommand -eq 'Remove-Item')) {
+            $issues+="Line $($call.Extent.StartLineNumber): '$name' mutates files outside the recorded GUI route. Use the application's observed Save/rename/location controls and fresh execution output paths; never relocate a default save or pre-delete an existing user file to satisfy a CSV step. External cleanup belongs to the runtime ownership workflow."
+        }
         if ($name -in @('Invoke-CimMethod','Invoke-WmiMethod','Set-CimInstance','New-CimInstance','Remove-CimInstance','Set-WmiInstance','Remove-WmiObject','Set-Printer','Add-Printer','Remove-Printer','Rename-Printer')) {
             $issues += "Line $($call.Extent.StartLineNumber): '$name' changes system/application state outside the recorded GUI route. Use visible controls; read-only management queries remain available for verification."
         }
@@ -261,6 +283,20 @@ function Test-AGTAGeneratedScript {
         }
     }
     return [pscustomobject]@{ok=($issues.Count -eq 0);issues=@($issues | Select-Object -Unique);checkedCommands=$checked;policyAssessment='Static checks and recorded CLI actions; not an execution sandbox.'}
+}
+
+function Test-AGTAScreenshotMetadataExpression {
+    param([Management.Automation.Language.Ast]$Expression,[hashtable]$MetadataVariables)
+    foreach ($node in @($Expression.FindAll({param($item) $true},$true))) {
+        if ($node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -notin @('Test-Path','Get-Item','gi')) {return $false}
+        if ($node -is [Management.Automation.Language.VariableExpressionAst] -and
+            $node.VariablePath.UserPath -notin @('true','false','null') -and -not $MetadataVariables.ContainsKey($node.VariablePath.UserPath)) {return $false}
+        if ($node -is [Management.Automation.Language.InvokeMemberExpressionAst]) {return $false}
+        if ($node -is [Management.Automation.Language.MemberExpressionAst] -and
+            $node.Member.Extent.Text -notin @('Length','Exists','Name','FullName','Extension','LastWriteTime','LastWriteTimeUtc','CreationTime','CreationTimeUtc','Attributes')) {return $false}
+        if ($node -is [Management.Automation.Language.TypeExpressionAst] -and $node.TypeName.FullName -notin @('bool','boolean','int','long','double','string')) {return $false}
+    }
+    return $true
 }
 
 function Assert-AGTAGeneratedScriptPreflight {

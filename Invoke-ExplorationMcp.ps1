@@ -6,6 +6,7 @@ $env:PSModulePath=(Join-Path $PSHOME 'Modules')+';'+$env:PSModulePath
 [Console]::InputEncoding=[Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 $entry=Join-Path $PSScriptRoot 'Invoke-Exploration.ps1'
+. (Join-Path $PSScriptRoot 'Framework\GeneratedScriptRuntime.ps1')
 $ready=$false
 $negotiated=$false
 $reviewRequired=@{}
@@ -19,6 +20,10 @@ $tools=@(
             interactionPolicy=@{type='string';enum=$availablePolicies};policyReason=@{type='string';description='Records existing user/testcase authorization, never an agent justification. Does not enable shortcut capability.'};
             requests=@{type='array';items=@{type='object'};description='Batch: {stepIndex,command,arguments:[]} objects. RecordSteps: {stepIndex,route,observedResult,verificationCommandIds:[]} objects. Structured *Json argument values are supported.'};
             includeImages=@{type='boolean';description='Batch screenshots return their original PNG/JPEG pixels inline by default (last two, <=10 MiB each), alongside receipt/physical region. Inspect these directly without another file-view call. Set false for text-only receipts.'}
+        }}}
+    @{name='agta_validate';description='Read-only full replay preflight using the saved exploration CSV, policy and manifest. Call after Complete and script generation; never substitutes for actual replay. Parses supplied script as data without executing it. Returns incomplete exploration/signature/policy issues and the checked revision hash.';
+        inputSchema=@{type='object';required=@('runRoot','scriptPath');additionalProperties=$false;properties=@{
+            runRoot=@{type='string';description='Absolute existing exploration runRoot.'};scriptPath=@{type='string';description='Absolute generated replay path.'}
         }}}
     @{name='agta_help';description='Read the authoring guide/template once, or targeted CLI/runtime signatures. Use topic authoring first; cli/runtime require observed missing names. Full command receipts and results remain on disk.';
         inputSchema=@{type='object';required=@('topic');additionalProperties=$false;properties=@{
@@ -58,6 +63,20 @@ function Invoke-McpTool($Name,$Arguments) {
             $begin.next='Keep this runRoot. Call agta_explore Batch with requests [{stepIndex,command,arguments:[]}]. Reuse observed selectors and guards; keep desktop commands sequential. Use explorationEvidenceRoot/full paths/PathKind. Review verification receipts, RecordSteps, clean up, Complete, then generate and execute the replay. agta_help provides targeted signatures.'
             $responses[-1]=$begin | ConvertTo-Json -Depth 80 -Compress
         }
+    } elseif ($Name -eq 'agta_validate') {
+        foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin @('runRoot','scriptPath')) {throw "Unknown validation argument: $property"}}
+        if (-not $Arguments.runRoot -or -not $Arguments.scriptPath -or -not [IO.Path]::IsPathRooted($Arguments.runRoot) -or -not [IO.Path]::IsPathRooted($Arguments.scriptPath)) {throw 'Validation requires absolute runRoot and scriptPath.'}
+        $manifestPath=Join-Path $Arguments.runRoot 'logs\exploration.json'
+        $manifest=Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        $scriptHash=if (Test-Path -LiteralPath $Arguments.scriptPath -PathType Leaf) {(Get-FileHash -LiteralPath $Arguments.scriptPath -Algorithm SHA256).Hash} else {$null}
+        $audit=Test-AGTAGeneratedScript -ScriptPath $Arguments.scriptPath -TestCaseCsv $manifest.testCasePath -PotatoCliPath $manifest.potatoCliPath -ExplorationPath $manifestPath -InteractionPolicy $manifest.interactionPolicy
+        $currentHash=if (Test-Path -LiteralPath $Arguments.scriptPath -PathType Leaf) {(Get-FileHash -LiteralPath $Arguments.scriptPath -Algorithm SHA256).Hash} else {$null}
+        if ($scriptHash -ne $currentHash) {$audit.ok=$false;$audit.issues+=,'Script changed during validation. Validate the saved revision again before replay.'}
+        $result=[ordered]@{ok=$audit.ok;stage='replay_preflight';replayExecuted=$false;taskComplete=$false;issues=$audit.issues;checkedCommands=$audit.checkedCommands;
+            scriptPath=$Arguments.scriptPath;scriptHash=$scriptHash;
+            nextAction=$(if ($audit.ok) {'Execute this exact script revision through Invoke-AGTATestPlan, then inspect failedSteps, required assertions and cleanupOk. Static validation alone is not task completion.'} else {'Correct the reported issues. If exploration is incomplete, resume its missing rows and Complete before generating a replay. Do not deliver a guessed partial script.'})}
+        if (-not $audit.ok) {$global:LASTEXITCODE=1}
+        $responses=@(($result | ConvertTo-Json -Depth 8 -Compress))
     } elseif ($Name -eq 'agta_help') {
         foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin @('topic','names','testCaseCsv')) {throw "Unknown help argument: $property"}}
         if ($Arguments.topic -eq 'authoring') {
@@ -128,14 +147,14 @@ while ($null -ne ($line=[Console]::ReadLine())) {
                     'initialize' {
                         if ($request.params.protocolVersion -isnot [string] -or -not $request.params.protocolVersion) {throw 'Initialize requires protocolVersion.'}
                         $version=if ($request.params.protocolVersion -in @('2024-11-05','2025-03-26','2025-06-18')) {$request.params.protocolVersion} else {'2025-06-18'}
-                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.0.4'}}
+                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.1.0'}}
                         $negotiated=$true;$ready=$false
                     }
                     'ping' {$reply.result=@{}}
                     'tools/list' {if (-not $ready) {throw 'Initialize the MCP session first.'};$reply.result=@{tools=$tools}}
                     'tools/call' {
                         if (-not $ready) {throw 'Initialize the MCP session first.'}
-                        if ($request.params.name -cnotin @('agta_explore','agta_help')) {$reply.error=@{code=-32602;message='Unknown tool.'};break}
+                        if ($request.params.name -cnotin @('agta_explore','agta_help','agta_validate')) {$reply.error=@{code=-32602;message='Unknown tool.'};break}
                         try {$reply.result=Invoke-McpTool $request.params.name $request.params.arguments}
                         catch {$reply.result=@{content=@(@{type='text';text=(@{ok=$false;error=$_.Exception.Message;next='Inspect Status/actual GUI before retrying an uncertain dispatch.'} | ConvertTo-Json -Compress)});isError=$true}}
                     }

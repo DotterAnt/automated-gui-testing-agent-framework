@@ -44,7 +44,9 @@ try {
     Check ($hello.result.protocolVersion -eq '2025-06-18' -and $hello.result.capabilities.tools) 'MCP handshake failed.'
     $server.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}');$server.StandardInput.Flush()
     $list=Rpc 'tools/list' @{}
-    Check ($list.result.tools.Count -eq 2 -and $list.result.tools[0].inputSchema.required -contains 'runRoot') 'Tool discovery lost input schemas.'
+    Check ($list.result.tools.Count -eq 3 -and $list.result.tools[0].inputSchema.required -contains 'runRoot') 'Tool discovery lost input schemas.'
+    $validationTool=@($list.result.tools | Where-Object {$_.name -eq 'agta_validate'})
+    Check ($validationTool.Count -eq 1 -and $validationTool[0].inputSchema.required -contains 'scriptPath') 'Read-only replay validation was missing from MCP discovery.'
     Check ('AllowShortcuts' -notin $list.result.tools[0].inputSchema.properties.interactionPolicy.enum) 'Default MCP schema exposed agent-enabled shortcuts.'
     $unknown=Rpc 'tools/call' @{name='unknown';arguments=@{}}
     Check ($unknown.error.code -eq -32602) 'Unknown tool was not a protocol error.'
@@ -53,6 +55,11 @@ try {
     $response=Tool @{action='Begin';runRoot=$run;testCaseCsv=$csv;potatoCliPath=$cli}
     $begin=(Values $response)[0]
     Check (-not $response.result.isError -and $begin.ok -and $begin.next -match 'agta_explore' -and $begin.mcpTiming) 'MCP Begin lost configuration/timing or advertised the shell transport.'
+    $replay=Join-Path $root 'replay.ps1';$marker=Join-Path $root 'must-not-exist.txt'
+    ('Set-Content -LiteralPath '''+$marker.Replace("'","''")+''' -Value "must not execute"') | Set-Content -LiteralPath $replay
+    $validation=Rpc 'tools/call' @{name='agta_validate';arguments=@{runRoot=$run;scriptPath=$replay}}
+    $validationValue=(Values $validation)[0]
+    Check ($validation.result.isError -and -not $validationValue.ok -and ($validationValue.issues -join ' ') -match 'incomplete' -and -not (Test-Path $marker)) 'MCP validation executed code or allowed incomplete exploration.'
     $response=Tool @{action='Begin';runRoot=(Join-Path $root 'unauthorized');testCaseCsv=$csv;potatoCliPath=$cli;interactionPolicy='AllowShortcuts'}
     Check ($response.result.isError -and (Values $response)[0].error -match 'authorization') 'MCP bypassed interaction-policy authorization.'
     $response=Tool @{action='Begin';runRoot=(Join-Path $root 'self-authorized');testCaseCsv=$csv;potatoCliPath=$cli;interactionPolicy='AllowShortcuts';policyReason='The application exposes required file actions through accelerators'}
@@ -91,6 +98,13 @@ try {
     $recorded=Tool @{action='RecordSteps';runRoot=$sealed;requests=@(@{stepIndex=1;route='Unit fixture route';observedResult='Unit fixture observation';verificationCommandIds=@($verification)})}
     Check (-not $recorded.result.isError -and (Values $recorded)[0].covered -eq 1) 'MCP did not record validated fixture receipts.'
     $complete=Tool @{action='Complete';runRoot=$sealed}
+    'Assert-ExpectedResult -Condition $true -Message "Preview"' | Set-Content -LiteralPath $replay
+    $validation=Rpc 'tools/call' @{name='agta_validate';arguments=@{runRoot=$sealed;scriptPath=$replay}}
+    Check ($validation.result.isError -and ((Values $validation)[0].issues -join ' ') -match 'always passes') 'MCP full preflight ignored a generated assertion error.'
+    'Write-Output "read-only fixture"' | Set-Content -LiteralPath $replay
+    $validation=Rpc 'tools/call' @{name='agta_validate';arguments=@{runRoot=$sealed;scriptPath=$replay}}
+    $validationValue=(Values $validation)[0]
+    Check (-not $validation.result.isError -and $validationValue.ok -and -not $validationValue.replayExecuted -and -not $validationValue.taskComplete -and $validationValue.scriptHash -eq (Get-FileHash $replay).Hash) 'MCP static validation claimed replay completion or lost the exact checked revision.'
     Check (-not $complete.result.isError -and (Values $complete)[0].replayReferencePath -and (Test-Path -LiteralPath (Values $complete)[0].replayReferencePath)) 'MCP did not seal and export a verified fixture run.'
     $response=Tool @{action='Status';runRoot=$run}
     Check (-not $response.result.isError -and (Values $response)[0].commandCount -eq 2 -and -not $server.HasExited) 'Completing another run killed the server or changed this run.'
@@ -127,6 +141,13 @@ try {
         Check ($response.result.content[1].text -match 'physical region' -and (Values $response)[0].data.path -eq $imagePath) 'Inline screenshot lost coordinate origin or its authoritative receipt.'
         $response=Tool @{action='Batch';runRoot=$guiRun;includeImages=$false;requests=@(@{stepIndex=1;command='screenshot';arguments=@('-OutFile',$imagePath,'-X','0','-Y','0','-Width','100','-Height','100')})}
         Check (-not $response.result.isError -and $response.result.content.Count -eq 1) 'Text-only screenshot option still returned image data.'
+        $waitedImage=Join-Path $root 'unmet-visual-wait.png'
+        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
+            @{stepIndex=1;command='screenshot';arguments=@('-OutFile',$waitedImage,'-X','0','-Y','0','-Width','100','-Height','100','-WaitForChangeFrom',$imagePath,'-ChangeRegionJson',@{x=0;y=0;width=100;height=100},'-TimeoutMs','0','-StableMs','0')},
+            @{stepIndex=1;command='help';arguments=@('-Topic','click')}
+        )}
+        Check ($response.result.isError -and @(Values $response).Count -eq 1 -and -not (Values $response)[0].data.conditionMet -and -not (Values $response)[0].verification.eligible -and (Test-Path $waitedImage)) 'MCP continued after an unmet visual wait or lost its final frame.'
+        Tool @{action='Status';runRoot=$guiRun} | Out-Null
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='windows';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title,'-WaitForNotExists','-TimeoutMs','0')})}
         Check ($response.result.isError -and -not (Values $response)[0].data.conditionMet -and -not (Values $response)[0].verification.eligible) 'A real open window passed MCP disappearance evidence.'
         Tool @{action='Status';runRoot=$guiRun} | Out-Null

@@ -75,6 +75,10 @@ try {
     $preflight=Test-AGTAGeneratedScript -ScriptPath $wrong
     Check (-not $preflight.ok -and @($preflight.issues | Where-Object { $_ -match 'ReadAllBytes' }).Count -eq 1) 'Short file-type alias survived bulk-read preflight.'
     Assert-FileWait -Result ([pscustomobject]@{ok=$true;data=@{path=$csv;conditionMet=$true}}) -Message 'Fixture file should exist.'
+    $visualWaitRejected=$false
+    try {Assert-PotatoOk @{ok=$true;data=@{visualWait=@{conditionMet=$false}}}} catch {$visualWaitRejected=$_.Exception.Message -match 'Visual transition'}
+    Check $visualWaitRejected 'An unmet visual screenshot wait survived replay assertion.'
+    Assert-PotatoOk @{ok=$true;data=@{visualWait=@{conditionMet=$true}}}
     $fileWaitFailed=$false
     try { Assert-FileWait -Result ([pscustomobject]@{ok=$true;data=@{path=$csv;conditionMet=$false}}) -Message 'Fixture wait failed.' } catch { $fileWaitFailed=$_.Exception.Message -eq 'Fixture wait failed.' }
     Check $fileWaitFailed 'File wait did not infer the path or honor a custom assertion message.'

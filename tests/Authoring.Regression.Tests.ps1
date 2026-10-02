@@ -37,6 +37,9 @@ try {
     Check ($workflow.nextAction -match 'without dispatching GUI input' -and $workflow.nextAction -match 'existing row receipts') 'Recording failure recommended replaying the GUI route.'
     Check (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=1}}}).eligible 'Window observation was rejected as evidence.'
     Check (-not (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=0}}}).eligible) 'Empty window observation was accepted as evidence.'
+    $unsettled=@{ok=$true;data=@{visualWait=@{conditionMet=$false};conditionMet=$false}}
+    Check (-not (Test-AGTAExplorationCommandSucceeded $unsettled screenshot)) 'An unmet visual transition wait allowed the next batch action.'
+    Check (-not (Get-AGTAExplorationVerificationInfo @{command='screenshot';result=$unsettled}).eligible) 'An unmet visual transition wait was eligible as verified evidence.'
     Check (-not (Get-AGTAExplorationVerificationInfo @{command='type';result=@{ok=$true;data=@{typed=$true;inputFocus=@{source='Win32';native=@{ready=$true}}}}}).eligible) 'Native focus readiness was confused with content verification.'
     $observation=Add-AGTAExplorationCommand $root 1 observe @('-Depth','3') @{ok=$true;data=@{elements=@()}}
     $receipt=Get-Content (Get-AGTAExplorationPaths $root).transcript -Tail 1 | ConvertFrom-Json
@@ -120,6 +123,29 @@ try {
     Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) 'Recorded screenshot output path was allowed to stand in for content verification.'
     '$shot=Invoke-EvidenceScreenshot -Name "preview"; Assert-ExpectedResult -Condition ((Test-Path -LiteralPath $shot) -and $measuredContentMatches) -Message "Actual content"' | Set-Content $scriptPath
     Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Evidence existence combined with actual content verification was rejected.'
+    foreach ($condition in @(
+        '((Test-Path -LiteralPath $shot) -and ((Get-Item -LiteralPath $shot).Length -gt 0))',
+        '((Get-Item -LiteralPath $shot).Length -gt 0)',
+        '($captureBytes -gt 0)',
+        '((Test-Path -LiteralPath $capture) -and $true)'
+    )) {
+        ('$shot=Invoke-EvidenceScreenshot -Name "preview"; $capture=$shot; $captureBytes=(Get-Item -LiteralPath $capture).Length; Assert-ExpectedResult -Condition '+$condition+' -Message "Rotated preview"') | Set-Content $scriptPath
+        Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) 'Compound/aliased screenshot metadata survived as content verification.'
+    }
+    '$shot=Invoke-EvidenceScreenshot -Name "preview"; Assert-ExpectedResult -Condition ((Test-Path $shot) -and ((Read-ContentPixels $shot) -eq "expected")) -Message "Actual content"' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Screenshot assertion containing an actual content reader was rejected.'
+    foreach ($code in @(
+        'Move-Item -LiteralPath $defaultCopy -Destination $expectedOutput',
+        'Copy-Item $defaultCopy $expectedOutput',
+        'Rename-Item $defaultCopy "expected.jpg"',
+        'mv $defaultCopy $expectedOutput',
+        '$StepBodies=@({param([ref]$Commands,[ref]$Evidence)}); Remove-Item -LiteralPath $existingUserPicture -Force'
+    )) {
+        $code | Set-Content $scriptPath
+        Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) 'File relocation or pre-deletion survived generated replay preflight.'
+    }
+    '$StepBodies=@({param([ref]$Commands,[ref]$Evidence)}); New-Item -ItemType Directory -Path $Context.ExecutionEvidenceRoot -Force | Out-Null; Get-FileHash $source' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Infrastructure directory preparation or read-only source verification was blocked.'
     'Assert-ExpectedResult -Condition (Test-Path -LiteralPath $savedFile) -Message "Saved file exists"' | Set-Content $scriptPath
     Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Legitimate created-file existence assertion was blocked.'
     'Get-Content -LiteralPath $artifact -Encoding Latin1' | Set-Content $scriptPath

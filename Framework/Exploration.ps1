@@ -112,6 +112,7 @@ function Assert-AGTAExplorationVerification {
     if ($v.command -notin @('read','select','windows','observe','wait-element','wait-file','read-pdf','screenshot')) { throw 'Verification needs a successful observation command or verified typing, not just action dispatch.' }
     if (($v.command -eq 'wait-element' -and -not $v.result.data.exists) -or
         ($v.command -eq 'wait-file' -and -not $v.result.data.conditionMet) -or
+        ($v.command -eq 'screenshot' -and $v.result.data.visualWait -and -not $v.result.data.visualWait.conditionMet) -or
         ($v.command -eq 'select' -and $v.result.data.count -le 0) -or
         ($v.command -eq 'windows' -and $(if ($v.result.data.waitForNotExists) {
             $v.result.data.conditionMet -ne $true -or $v.result.data.count -ne 0
@@ -192,7 +193,7 @@ function Complete-AGTAExploration {
             'Resolve PIDs, handles, checkpoints, foreground selectors and run output paths again in replay; exploration values are not stable identities.',
             'New GUI handoff: checkpoint before opening, then focus SinceCheckpoint to register its new window. Reused window: exact fresh foregroundSelector with WindowSelectorJson; plain focus does not grant cleanup ownership.',
             'First-run/import/already-present state may change during exploration. Probe optional controls without input; branch on actual state before mandatory actions.',
-            'Opaque controls require screenshot/pixel readiness. Do not add long waits for names absent from the observed accessibility tree, or repeat a state-changing click.',
+            'Opaque asynchronous controls: screenshot WaitForChangeFrom with an observed ChangeRegionJson can await changed/settled content without repeated input; preserve tested bounds/origin and assert conditionMet. Do not repeat clicks from immediate stale captures.',
             'Every content/layout expectation needs actual replay assertions. Screenshot existence, dimensions and PDF markers do not prove the image or absence of cropping.',
             'Runtime preflights each replay. After a repair, run the script directly; use one targeted read-only check for an unresolved argument/signature error instead of duplicate parse plus preflight calls.');
         steps=@($routes | ForEach-Object {
@@ -210,7 +211,8 @@ function Test-AGTAExplorationCommandSucceeded {
     return [bool]($Result.ok -and -not (
         ($Command -eq 'wait-element' -and -not $Result.data.exists) -or
         ($Command -eq 'windows' -and $Result.data.waitForNotExists -and ($Result.data.conditionMet -ne $true -or $Result.data.count -ne 0)) -or
-        ($Command -eq 'wait-file' -and -not $Result.data.conditionMet)))
+        ($Command -eq 'wait-file' -and -not $Result.data.conditionMet) -or
+        ($Command -eq 'screenshot' -and $Result.data.visualWait -and -not $Result.data.visualWait.conditionMet)))
 }
 
 function Get-AGTAExplorationWorkflow {

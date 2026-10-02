@@ -272,6 +272,9 @@ function Assert-PotatoOk {
         [string] $Message = 'PoTATo command failed.'
     )
 
+    if ($Result.data.visualWait -and -not $Result.data.visualWait.conditionMet) {
+        throw "$Message Visual transition did not occur/settle; inspect the retained screenshot before further input."
+    }
     if (-not [bool]$Result.ok -or ($Result.data.verificationPerformed -and $Result.data.verified -eq $false)) {
         $detail = if ($Result.error) { $Result.error.message } else { 'No error detail returned.' }
         throw "$Message $detail"
