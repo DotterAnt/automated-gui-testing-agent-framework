@@ -1,3 +1,82 @@
+function Assert-ImageRegionMatches {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string]$ReferencePath,
+        [object]$Region,
+        [ValidateSet(0,90,180,270)] [int]$ReferenceRotation=0,
+        [ValidateRange(0,255)] [double]$MaxMeanError=8,
+        [ValidateRange(0,255)] [double]$MaxTileError=24,
+        [ValidateRange(0,0.1)] [double]$AspectTolerance=0.02,
+        [ValidateRange(1,16777216)] [int]$MaxPixels=16777216,
+        [ValidateRange(1,67108864)] [int]$MaxBytes=16777216,
+        [ValidateRange(0,60000)] [int]$TimeoutMs=2000,
+        [string]$Message='Actual image region must preserve the reference content and orientation.',
+        [switch]$PassThru)
+    Add-Type -AssemblyName System.Drawing
+    if (-not ('AGTAImagePixels' -as [type])) {Add-Type -Path (Join-Path $PSScriptRoot 'ImagePixels.cs')}
+    $resources=New-Object 'Collections.Generic.List[IDisposable]'
+    $bitmaps=@();$locks=@();$images=@();$watch=[Diagnostics.Stopwatch]::StartNew()
+    try {
+        foreach ($file in @($Path,$ReferencePath)) {
+            do {
+                try {$stream=[IO.File]::Open($file,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite);break}
+                catch [IO.IOException] {
+                    if ($watch.ElapsedMilliseconds -ge $TimeoutMs) {throw}
+                    Start-Sleep -Milliseconds ([int][Math]::Max(1,[Math]::Min(100,$TimeoutMs-$watch.ElapsedMilliseconds)))
+                }
+            } while ($true)
+            $resources.Add($stream)
+            if ($stream.Length -gt $MaxBytes) {throw 'Image exceeds MaxBytes.'}
+            $image=[Drawing.Image]::FromStream($stream,$false,$false);$resources.Add($image)
+            if ([long]$image.Width*$image.Height -gt $MaxPixels) {throw 'Decoded image exceeds MaxPixels.'}
+            $images+=,$image
+        }
+        if ($ReferenceRotation) {
+            # Transform only a decoded reference in memory. Never create or
+            # change an expected artifact, and never rotate the actual output.
+            $images[1].RotateFlip([Drawing.RotateFlipType]::("Rotate"+$ReferenceRotation+'FlipNone'))
+        }
+        $rectangle=[Drawing.Rectangle]::new(0,0,$images[0].Width,$images[0].Height)
+        if ($null -ne $Region) {
+            foreach ($key in @('x','y','width','height')) {
+                if ($null -eq $Region.$key -or [string]$Region.$key -notmatch '^\d+$' -or [decimal]$Region.$key -gt [int]::MaxValue) {throw 'Region needs nonnegative integer x,y,width,height in actual image pixels.'}
+            }
+            if ([long]$Region.width -lt 1 -or [long]$Region.height -lt 1 -or
+                [long]$Region.x+[long]$Region.width -gt $images[0].Width -or [long]$Region.y+[long]$Region.height -gt $images[0].Height) {throw 'Region must be nonempty and entirely inside the actual image.'}
+            $rectangle=[Drawing.Rectangle]::new([int]$Region.x,[int]$Region.y,[int]$Region.width,[int]$Region.height)
+        }
+        $aspectError=[Math]::Abs(($rectangle.Width/[double]$rectangle.Height)/($images[1].Width/[double]$images[1].Height)-1)
+        $regionImage=([Drawing.Bitmap]$images[0]).Clone($rectangle,[Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $resources.Add($regionImage)
+        $comparisonImages=@($regionImage,$images[1])
+        for ($i=0;$i -lt 2;$i++) {
+            $bitmap=[Drawing.Bitmap]::new(128,128,[Drawing.Imaging.PixelFormat]::Format32bppArgb)
+            $resources.Add($bitmap);$bitmaps+=,$bitmap
+            $graphics=[Drawing.Graphics]::FromImage($bitmap)
+            $attributes=[Drawing.Imaging.ImageAttributes]::new()
+            try {
+                $graphics.Clear([Drawing.Color]::White)
+                $graphics.InterpolationMode=[Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                $attributes.SetWrapMode([Drawing.Drawing2D.WrapMode]::TileFlipXY)
+                $source=[Drawing.Rectangle]::new(0,0,$comparisonImages[$i].Width,$comparisonImages[$i].Height)
+                $graphics.DrawImage($comparisonImages[$i],[Drawing.Rectangle]::new(0,0,128,128),$source.X,$source.Y,$source.Width,$source.Height,[Drawing.GraphicsUnit]::Pixel,$attributes)
+            } finally {$attributes.Dispose();$graphics.Dispose()}
+            $locks+=,$bitmap.LockBits([Drawing.Rectangle]::new(0,0,128,128),[Drawing.Imaging.ImageLockMode]::ReadOnly,[Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        }
+        $comparison=[AGTAImagePixels]::Compare($locks[0].Scan0,$locks[0].Stride,$locks[1].Scan0,$locks[1].Stride,128)
+        $info=[pscustomobject]@{path=$Path;referencePath=$ReferencePath;referenceRotation=$ReferenceRotation;
+            region=@{x=$rectangle.X;y=$rectangle.Y;width=$rectangle.Width;height=$rectangle.Height};
+            aspectError=$aspectError;meanError=$comparison.meanError;maxTileError=$comparison.maxTileError;contentSource='DecodedImagePixels'}
+    } catch {Assert-ExpectedResult -Condition $false -Message "$Message $($_.Exception.Message)";return}
+    finally {
+        for ($i=0;$i -lt $locks.Count;$i++) {$bitmaps[$i].UnlockBits($locks[$i])}
+        for ($i=$resources.Count-1;$i -ge 0;$i--) {$resources[$i].Dispose()}
+    }
+    Assert-ExpectedResult -Condition ($info.aspectError -le $AspectTolerance -and $info.meanError -le $MaxMeanError -and $info.maxTileError -le $MaxTileError) -Message (
+        "$Message Aspect error $($info.aspectError) (limit $AspectTolerance), mean RGB error $($info.meanError) (limit $MaxMeanError), worst tile $($info.maxTileError) (limit $MaxTileError).")
+    if ($PassThru) {return $info}
+}
+
 function Assert-ImageContainsColors {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string]$Path,

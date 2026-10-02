@@ -11,6 +11,7 @@ function ConvertTo-AGTACompactWindowData {
         }
         if ($window.automationId) {$item.automationId=$window.automationId}
         if ($window.isModal) {$item.isModal=$true}
+        if ($window.identitySource) {$item.identitySource=$window.identitySource}
         if (@($window.propertyErrors).Count) {$item.propertyErrors=$window.propertyErrors}
         $item
     })
@@ -187,6 +188,13 @@ function Complete-AGTAExploration {
     @{note='Reference only, not a generated test. Preserve tested action arguments; discard irrelevant discovery and add real assertions. New selector constraints/routes need GUI validation.';steps=$routes} | ConvertTo-Json -Depth 24 | Set-Content -LiteralPath $routesPath -Encoding UTF8
     $referencePath=Join-Path $RunRoot 'logs\replay-reference.json'
     @{note='Reviewed route reference, not a replay script. Keep tested guards and assertions. Omit exploratory recovery actions that are unnecessary from the verified initial state.';
+        replayRules=@('Preserve each CSV-specific menu route and expected content check; a convenient default action is not a substitute.',
+            'Resolve PIDs, handles, checkpoints, foreground selectors and run output paths again in replay; exploration values are not stable identities.',
+            'New GUI handoff: checkpoint before opening, then focus SinceCheckpoint to register its new window. Reused window: exact fresh foregroundSelector with WindowSelectorJson; plain focus does not grant cleanup ownership.',
+            'First-run/import/already-present state may change during exploration. Probe optional controls without input; branch on actual state before mandatory actions.',
+            'Opaque controls require screenshot/pixel readiness. Do not add long waits for names absent from the observed accessibility tree, or repeat a state-changing click.',
+            'Every content/layout expectation needs actual replay assertions. Screenshot existence, dimensions and PDF markers do not prove the image or absence of cropping.',
+            'Runtime preflights each replay. After a repair, run the script directly; use one targeted read-only check for an unresolved argument/signature error instead of duplicate parse plus preflight calls.');
         steps=@($routes | ForEach-Object {
             $row=$_
             [ordered]@{stepIndex=$row.stepIndex;route=$row.route;observedResult=$row.observedResult;

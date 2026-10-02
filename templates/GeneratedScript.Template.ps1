@@ -49,6 +49,9 @@ $StepBodies = @(
     #     # Evidence: Add-EvidencePath -Evidence $Evidence -Path $ScreenshotPath
     #     # Content: Assert-ExpectedResult -Condition <actual Boolean> -Message '<expectation>'
     #     # Absence: Assert-ExpectedResult -Condition $closedWindows.data.conditionMet -Message '<closed>'
+    #     # Image content: Assert-ImageRegionMatches -Path $actual -ReferencePath $input -ReferenceRotation 90
+    #     # Window selection: refresh windows -Foreground, then focus -WindowSelectorJson $result.data.foregroundSelector.
+    #     # Ownership: a new handoff uses its pre-action checkpoint; a reused window remains unowned.
     # }
     # Add each remaining row with its tested GUI route and expected-result assertion.
 )

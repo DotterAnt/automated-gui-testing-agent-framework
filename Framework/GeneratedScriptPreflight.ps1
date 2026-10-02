@@ -6,7 +6,7 @@ function Get-AGTARuntimeHelp {
     $published = @(
         'Initialize-AGTAGeneratedTest', 'Invoke-RecordedStep', 'Invoke-StepCommand', 'Invoke-StepClick', 'Invoke-AGTATestPlan',
         'Assert-PotatoOk', 'Assert-PotatoFound', 'Assert-FileWait',
-        'Assert-ExpectedResult', 'Assert-TextContains', 'Read-AGTAArtifactBytes', 'Read-AGTAZipText', 'Assert-ZipTextContains', 'Assert-ArtifactPrefix', 'Assert-ImageContainsColors',
+        'Assert-ExpectedResult', 'Assert-TextContains', 'Read-AGTAArtifactBytes', 'Read-AGTAZipText', 'Assert-ZipTextContains', 'Assert-ArtifactPrefix', 'Assert-ImageContainsColors', 'Assert-ImageRegionMatches',
         'Invoke-EvidenceScreenshot', 'Add-EvidencePath', 'Register-OpenedProcess',
         'Register-CreatedExternalPath', 'Invoke-TestCleanup',
         'Complete-AGTAGeneratedTest', 'Get-AGTATestExitCode',
@@ -37,6 +37,7 @@ function Get-AGTARuntimeHelp {
                 Assert-ZipTextContains {'Reads actual matching ZIP entries and asserts raw text fragments with ordinal comparison and normalized CR/LF. Optional ExpectedEntryCount asserts cardinality. XML entities are not decoded; use a read-only parser for semantic XML assertions.'}
                 Assert-TextContains {'Result must be a successful CLI read/read-pdf envelope with content provenance. For archive entries use Assert-ZipTextContains; plain strings and {name,text} objects are not CLI results.'}
                 Assert-ImageContainsColors {'Read-only shared decode and compiled pixel scan, bounded by MaxBytes/MaxPixels. ColorRanges objects: name,rMin,rMax,gMin,gMax,bMin,bMax,aMin (RGB defaults 0..255, aMin defaults 1). Each needs MinimumPixels. ExpectedFormat checks actual signature/decoded format, not extension. PassThru returns counts/dimensions. Color presence alone does not prove shape, layout, record count or correct GUI creation.'}
+                Assert-ImageRegionMatches {'Compare actual decoded pixels against the complete existing reference, optionally rotated clockwise by 0/90/180/270. Region is an observed {x,y,width,height} rectangle in Path pixels; omit for the whole output image. Checks aspect ratio and RGB errors on a 128x128 grid plus each of 64 tiles, allowing tested JPEG/render differences. Defaults: mean <=8, worst tile <=24, aspect error <=2%. This is an approximate content comparison, not byte equality or a PDF renderer. For PDF/image expectations render the actual PDF first with a verified available renderer, then compare its observed image region. Never use marker regex/header/dimensions as a replacement. PassThru returns measured errors/provenance.'}
                 Invoke-StepCommand {'*Json option values may be strings or objects; objects are serialized before CLI invocation.'}
                 Add-EvidencePath {'Pass the current row reference: -Evidence $Evidence -Path <saved evidence>. Merely saving/adding a screenshot does not assert its contents.'}
                 Assert-ExpectedResult {'Condition must be a Boolean measured from actual state/content. Literal $true is rejected by preflight. Dispatch, filenames, image dimensions or a PDF header alone do not prove all content expectations.'}
@@ -94,7 +95,12 @@ function Test-AGTAGeneratedScript {
         $issues += @($exploration.issues)
     }
     $localFunctions = @{}
+    $screenshotPaths=@{}
     foreach ($assignment in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst]}, $true))) {
+        if ($assignment.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+            $assignment.Right.Find({param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Invoke-EvidenceScreenshot'},$true)) {
+            $screenshotPaths[$assignment.Left.VariablePath.UserPath]=$true
+        }
         if ($assignment.Left -is [Management.Automation.Language.VariableExpressionAst] -and
             $assignment.Left.VariablePath.UserPath -match '^(?:(?:global|script|local):)?InteractionPolicy$' -and
             $assignment.Right.Extent.Text -match '^\s*([''"])AllowShortcuts\1\s*$') {
@@ -108,6 +114,22 @@ function Test-AGTAGeneratedScript {
     foreach ($definition in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst]}, $true))) {
         $localFunctions[$definition.Name] = $true
     }
+    foreach ($shotCall in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Invoke-StepCommand'},$true))) {
+        $shotParts=@($shotCall.CommandElements);$isScreenshot=$false
+        for ($i=1;$i -lt $shotParts.Count;$i++) {
+            if ($shotParts[$i] -isnot [Management.Automation.Language.CommandParameterAst] -or $shotParts[$i].ParameterName -ne 'Command') {continue}
+            $value=$shotParts[$i].Argument
+            if (-not $value -and $i+1 -lt $shotParts.Count) {$value=$shotParts[$i+1]}
+            $isScreenshot=$value -is [Management.Automation.Language.StringConstantExpressionAst] -and $value.Value -eq 'screenshot'
+        }
+        if (-not $isScreenshot) {continue}
+        foreach ($array in @($shotCall.FindAll({param($node) $node -is [Management.Automation.Language.ArrayLiteralAst]},$true))) {
+            for ($i=0;$i -lt $array.Elements.Count-1;$i++) {
+                if ($array.Elements[$i] -is [Management.Automation.Language.StringConstantExpressionAst] -and $array.Elements[$i].Value -eq '-OutFile' -and
+                    $array.Elements[$i+1] -is [Management.Automation.Language.VariableExpressionAst]) {$screenshotPaths[$array.Elements[$i+1].VariablePath.UserPath]=$true}
+            }
+        }
+    }
     $checked = 0
     foreach ($call in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst]}, $true))) {
         $name = $call.GetCommandName()
@@ -119,6 +141,15 @@ function Test-AGTAGeneratedScript {
                 if (-not $condition -and $i+1 -lt $parts.Count) {$condition=$parts[$i+1]}
                 if ($condition -and $condition.Extent.Text -match '^\s*\(*\s*\$true\s*\)*\s*$') {
                     $issues+="Line $($condition.Extent.StartLineNumber): Assert-ExpectedResult -Condition `$true always passes and cannot verify a GUI result. Assert actual readback/content or a measured postcondition; a saved screenshot alone is evidence, not an automated assertion."
+                }
+                if ($condition -and -not $condition.Find({param($node) $node -is [Management.Automation.Language.BinaryExpressionAst]},$true)) {
+                    $pathChecks=@($condition.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Test-Path'},$true))
+                    foreach ($pathCheck in $pathChecks) {
+                        $shotVariables=@($pathCheck.FindAll({param($node) $node -is [Management.Automation.Language.VariableExpressionAst] -and $screenshotPaths.ContainsKey($node.VariablePath.UserPath)},$true))
+                        if ($shotVariables.Count) {
+                            $issues+="Line $($condition.Extent.StartLineNumber): screenshot existence cannot verify its contents or count as an expected-result assertion. Add the screenshot as evidence and compare its observed image region with Assert-ImageRegionMatches or assert actual content readback."
+                        }
+                    }
                 }
             }
         }
@@ -164,18 +195,39 @@ function Test-AGTAGeneratedScript {
         if ($name -in @('Invoke-CimMethod','Invoke-WmiMethod','Set-CimInstance','New-CimInstance','Remove-CimInstance','Set-WmiInstance','Remove-WmiObject','Set-Printer','Add-Printer','Remove-Printer','Rename-Printer')) {
             $issues += "Line $($call.Extent.StartLineNumber): '$name' changes system/application state outside the recorded GUI route. Use visible controls; read-only management queries remain available for verification."
         }
-        if ($PolicyOnly) { continue }
         if (-not $name -or $localFunctions.ContainsKey($name)) { continue }
-        $checked++
+        if (-not $PolicyOnly) {$checked++}
         $command = Get-Command -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $command) {
-            $issues += "Line $($call.Extent.StartLineNumber): command '$name' is unavailable. Dot-source its helper file or correct the name."
+            if (-not $PolicyOnly) {$issues += "Line $($call.Extent.StartLineNumber): command '$name' is unavailable. Dot-source its helper file or correct the name."}
             continue
         }
         if ($command.CommandType -notin @('Function','Cmdlet','Alias')) { continue }
         foreach ($parameter in @($call.CommandElements | Where-Object { $_ -is [Management.Automation.Language.CommandParameterAst] })) {
             if (-not $command.Parameters.ContainsKey($parameter.ParameterName)) {
-                $issues += "Line $($parameter.Extent.StartLineNumber): '$name' has no parameter '-$($parameter.ParameterName)'."
+                if (-not $PolicyOnly) {$issues += "Line $($parameter.Extent.StartLineNumber): '$name' has no parameter '-$($parameter.ParameterName)'."}
+                continue
+            }
+            $value=$parameter.Argument
+            if (-not $value) {
+                $position=[Array]::IndexOf($parts,$parameter)
+                if ($position+1 -lt $parts.Count) {$value=$parts[$position+1]}
+            }
+            # Validate literal values without evaluating any supplied code or
+            # launching GUI actions. Dynamic expressions still need runtime checks.
+            if ($value -is [Management.Automation.Language.ConstantExpressionAst] -or $value -is [Management.Automation.Language.StringConstantExpressionAst]) {
+                $metadata=$command.Parameters[$parameter.ParameterName]
+                if ($metadata.ParameterType.IsEnum) {
+                    try {
+                        $enumValue=[Enum]::Parse($metadata.ParameterType,[string]$value.Value,$true)
+                        if (-not [Enum]::IsDefined($metadata.ParameterType,$enumValue) -and -not $metadata.ParameterType.IsDefined([FlagsAttribute],$false)) {throw 'Undefined enum value'}
+                    } catch {$issues+="Line $($value.Extent.StartLineNumber): '$name -$($parameter.ParameterName) $($value.Value)' is unsupported in PowerShell $($PSVersionTable.PSVersion). Use a supported value or shared artifact helpers before replaying the GUI."}
+                }
+                foreach ($attribute in $metadata.Attributes) {
+                    if ($attribute -is [Management.Automation.ValidateSetAttribute] -and [string]$value.Value -notin $attribute.ValidValues) {
+                        $issues+="Line $($value.Extent.StartLineNumber): '$name -$($parameter.ParameterName)' requires one of: $($attribute.ValidValues -join ', ')."
+                    }
+                }
             }
         }
     }

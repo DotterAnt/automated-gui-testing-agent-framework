@@ -113,6 +113,22 @@ try {
     }
     'Assert-ExpectedResult -Condition:$true -Message "Preview"' | Set-Content $scriptPath
     Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) 'Inline unconditional passing assertion survived.'
+    '$shot=Invoke-EvidenceScreenshot -Name "preview"; Assert-ExpectedResult -Condition (Test-Path -LiteralPath $shot) -Message "Rotated image"' | Set-Content $scriptPath
+    $audit=Test-AGTAGeneratedScript $scriptPath -PolicyOnly
+    Check (-not $audit.ok -and ($audit.issues -join ' ') -match 'screenshot existence') 'Screenshot existence was allowed to stand in for content verification.'
+    '$shot=Join-Path $root "preview.png"; $r=Invoke-StepCommand -Commands $Commands -Command screenshot -Arguments @("-OutFile",$shot); Assert-ExpectedResult -Condition (Test-Path -LiteralPath $shot) -Message "Rotated image"' | Set-Content $scriptPath
+    Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) 'Recorded screenshot output path was allowed to stand in for content verification.'
+    '$shot=Invoke-EvidenceScreenshot -Name "preview"; Assert-ExpectedResult -Condition ((Test-Path -LiteralPath $shot) -and $measuredContentMatches) -Message "Actual content"' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Evidence existence combined with actual content verification was rejected.'
+    'Assert-ExpectedResult -Condition (Test-Path -LiteralPath $savedFile) -Message "Saved file exists"' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Legitimate created-file existence assertion was blocked.'
+    'Get-Content -LiteralPath $artifact -Encoding Latin1' | Set-Content $scriptPath
+    $audit=Test-AGTAGeneratedScript $scriptPath -PolicyOnly
+    Check ($audit.ok -eq ($PSVersionTable.PSVersion.Major -ge 6)) 'Literal shell-specific encoding did not match the active host compatibility.'
+    'Assert-ImageRegionMatches -Path $image -ReferencePath $source -ReferenceRotation 45' | Set-Content $scriptPath
+    Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) 'Unsupported literal helper rotation survived preflight.'
+    'Get-Content -LiteralPath $artifact -Encoding UTF8' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Supported literal encoding was rejected.'
     'Assert-ExpectedResult -Condition ($text -eq "Test") -Message "Persisted text"' | Set-Content $scriptPath
     Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Read-only content assertion was blocked.'
     'Get-CimInstance -ClassName Win32_Printer | Select-Object Name,Default' | Set-Content $scriptPath

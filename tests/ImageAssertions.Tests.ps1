@@ -27,6 +27,36 @@ try {
     Reject {Assert-ImageContainsColors $wrong -ColorRanges $colors -ExpectedFormat Png} 'Misnamed non-PNG output passed.'
     $help=Get-AGTARuntimeHelp Assert-ImageContainsColors
     Check ($help.available -and $help.note -match 'compiled pixel scan') 'Image helper was not published in targeted help.'
+    $reference=Join-Path $root 'reference.png';$rotated=Join-Path $root 'rotated.jpg';$screen=Join-Path $root 'screen.png';$crop=Join-Path $root 'crop.png'
+    $fixture=[Drawing.Bitmap]::new(80,48)
+    try {
+        for ($y=0;$y -lt 48;$y++) {for ($x=0;$x -lt 80;$x++) {$fixture.SetPixel($x,$y,[Drawing.Color]::FromArgb([int]($x*3),[int]($y*5),[int](($x+$y)%48*5)))}}
+        $fixture.Save($reference,[Drawing.Imaging.ImageFormat]::Png)
+        $fixture.RotateFlip([Drawing.RotateFlipType]::Rotate90FlipNone)
+        $fixture.Save($rotated,[Drawing.Imaging.ImageFormat]::Jpeg)
+        $snapshot=[Drawing.Bitmap]::new(90,100);$graphics=[Drawing.Graphics]::FromImage($snapshot)
+        try {$graphics.Clear([Drawing.Color]::Black);$graphics.DrawImageUnscaled($fixture,20,10);$snapshot.Save($screen,[Drawing.Imaging.ImageFormat]::Png)} finally {$graphics.Dispose();$snapshot.Dispose()}
+        $cropped=$fixture.Clone([Drawing.Rectangle]::new(0,16,48,64),[Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        try {
+            $stretched=[Drawing.Bitmap]::new(48,80);$graphics=[Drawing.Graphics]::FromImage($stretched)
+            try {$graphics.DrawImage($cropped,[Drawing.Rectangle]::new(0,0,48,80));$stretched.Save($crop,[Drawing.Imaging.ImageFormat]::Png)} finally {$graphics.Dispose();$stretched.Dispose()}
+        } finally {$cropped.Dispose()}
+    } finally {$fixture.Dispose()}
+    $hash=(Get-FileHash $reference).Hash
+    $info=Assert-ImageRegionMatches $rotated -ReferencePath $reference -ReferenceRotation 90 -PassThru
+    Check ($info.contentSource -eq 'DecodedImagePixels' -and $info.meanError -lt 8 -and $info.maxTileError -lt 24) 'Actual compressed rotated content failed measured comparison.'
+    $held=[IO.File]::Open($screen,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)
+    try {$info=Assert-ImageRegionMatches $screen -ReferencePath $reference -ReferenceRotation 90 -Region @{x=20;y=10;width=48;height=80} -MaxMeanError 0 -MaxTileError 0 -PassThru} finally {$held.Dispose()}
+    Check ($info.meanError -eq 0 -and (Get-FileHash $reference).Hash -eq $hash) 'Observed screenshot region changed content or modified the source.'
+    Reject {Assert-ImageRegionMatches $reference -ReferencePath $reference -ReferenceRotation 90} 'A no-op passed requested rotation.'
+    Reject {Assert-ImageRegionMatches $rotated -ReferencePath $reference -ReferenceRotation 270} 'Wrong rotation direction passed the same dimensions.'
+    Reject {Assert-ImageRegionMatches $crop -ReferencePath $reference -ReferenceRotation 90} 'Cropped/stretched content passed matching dimensions.'
+    Reject {Assert-ImageRegionMatches $screen -ReferencePath $reference -ReferenceRotation 90 -Region @{x=80;y=10;width=48;height=80}} 'Out-of-bounds screenshot region was accepted.'
+    Reject {Assert-ImageRegionMatches $screen -ReferencePath $reference -Region @{x=0;y=0;width=0;height=10}} 'Empty comparison region passed.'
+    Reject {Assert-ImageRegionMatches $rotated -ReferencePath $reference -ReferenceRotation 90 -MaxPixels 3000} 'Image comparison ignored its decoded pixel bound.'
+    Reject {Assert-ImageRegionMatches $rotated -ReferencePath $reference -ReferenceRotation 90 -MaxBytes 8} 'Image comparison ignored its byte bound.'
+    $help=Get-AGTARuntimeHelp Assert-ImageRegionMatches
+    Check ($help.available -and $help.note -match 'approximate content comparison') 'Comparison limits were absent from targeted help.'
     "Image assertion checks: $script:checks passed"
 } finally {
     $resolved=[IO.Path]::GetFullPath($root);$parent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
