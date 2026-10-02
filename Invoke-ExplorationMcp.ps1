@@ -20,7 +20,7 @@ $tools=@(
             action=@{type='string';enum=@('Begin','Batch','RecordSteps','Status','Complete','Replay')};runRoot=@{type='string'};
             workflowMode=@{type='string';enum=@('Live','RecordedBatch');description='Begin only. Live is default. RecordedBatch explicitly selects the old separate walkthrough when required.'};
             replayAction=@{type='string';enum=@('Start','Step','Repair','Skip','Status','Close','Verify');description='Required with action Replay; identical to agta_replay action.'};
-            scriptPath=@{type='string'};stepIndex=@{type='integer';minimum=1};reason=@{type='string'};
+            scriptPath=@{type='string'};stepIndex=@{type='integer';minimum=1;description='Replay Repair: required for GUI input; actual CSV row for receipts. Does not advance the pending row.'};reason=@{type='string'};
             testCaseCsv=@{type='string'};potatoCliPath=@{type='string'};
             interactionPolicy=@{type='string';enum=$availablePolicies};policyReason=@{type='string';description='Records existing user/testcase authorization, never an agent justification. Does not enable shortcut capability.'};
             requests=@{type='array';items=@{type='object'};description='Batch: {stepIndex,command,arguments:[]} objects. RecordSteps: {stepIndex,route,observedResult,verificationCommandIds:[]} objects. Structured *Json argument values are supported.'};
@@ -39,7 +39,7 @@ $tools=@(
         inputSchema=@{type='object';required=@('action','runRoot');additionalProperties=$false;properties=@{
             action=@{type='string';enum=@('Start','Step','Repair','Skip','Status','Close','Verify')};runRoot=@{type='string'};
             scriptPath=@{type='string';description='Absolute template-based script path for Start/Verify; Step reloads only saved body edits.'};
-            stepIndex=@{type='integer';minimum=1;description='Step only; must equal the next pending row.'};reason=@{type='string';description='Required for diagnostic Skip.'};
+            stepIndex=@{type='integer';minimum=1;description='Step: next pending row. Repair: required for GUI input, identifies the actual CSV row for receipts; does not advance the plan.'};reason=@{type='string';description='Required for diagnostic Skip.'};
             requests=@{type='array';minItems=1;maxItems=20;items=@{type='object';required=@('command','arguments');additionalProperties=$false;properties=@{command=@{type='string'};arguments=@{type='array'}}}};
             includeImages=@{type='boolean';description='Return up to two retained screenshot evidence files inline; default true.'}
         }}}
@@ -141,7 +141,7 @@ function Invoke-McpTool($Name,$Arguments) {
                 $value=@{ok=$true;runKind='Diagnostic';qualifying=$false;nextStepIndex=1;executionEvidenceRoot=$session.context.ExecutionEvidenceRoot;resultPath=$session.context.ResultPath;next='Write/test the next body with Step. Variables and paths persist. Record reviewed verificationCommandIds with agta_explore RecordSteps.'}
             }
             'Step' {if (-not $session) {throw 'Start the live plan first.'};$value=Invoke-AGTAPlanStep $session -StepIndex $Arguments.stepIndex}
-            'Repair' {if (-not $session) {throw 'Start the live plan first.'};$value=@(Invoke-AGTAPlanRepair $session $Arguments.requests)}
+            'Repair' {if (-not $session) {throw 'Start the live plan first.'};$value=@(Invoke-AGTAPlanRepair $session $Arguments.requests -StepIndex $Arguments.stepIndex)}
             'Skip' {if (-not $session) {throw 'Start the live plan first.'};$value=Skip-AGTAPlanStep $session $Arguments.reason}
             'Status' {if (-not $session) {throw 'Start the live plan first.'};$value=Get-AGTAPlanStatus $session}
             'Close' {if (-not $session) {throw 'Start the live plan first.'};$value=Close-AGTAPlanSession $session}
@@ -259,7 +259,7 @@ while ($null -ne ($line=[Console]::ReadLine())) {
                     'initialize' {
                         if ($request.params.protocolVersion -isnot [string] -or -not $request.params.protocolVersion) {throw 'Initialize requires protocolVersion.'}
                         $version=if ($request.params.protocolVersion -in @('2024-11-05','2025-03-26','2025-06-18')) {$request.params.protocolVersion} else {'2025-06-18'}
-                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.3.0'}}
+                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.3.1'}}
                         $negotiated=$true;$ready=$false
                     }
                     'ping' {$reply.result=@{}}
@@ -268,7 +268,13 @@ while ($null -ne ($line=[Console]::ReadLine())) {
                         if (-not $ready) {throw 'Initialize the MCP session first.'}
                         if ($request.params.name -cnotin @('agta_explore','agta_help','agta_validate','agta_replay','agta_inspect')) {$reply.error=@{code=-32602;message='Unknown tool.'};break}
                         try {$reply.result=Invoke-McpTool $request.params.name $request.params.arguments}
-                        catch {$reply.result=@{content=@(@{type='text';text=(@{ok=$false;error=$_.Exception.Message;next='Inspect Status/actual GUI before retrying an uncertain dispatch.'} | ConvertTo-Json -Compress)});isError=$true}}
+                        catch {
+                            $failure=@{ok=$false;error=$_.Exception.Message;next='Inspect Status/actual GUI before retrying an uncertain dispatch.'}
+                            $sourceLine=([string]$_.InvocationInfo.Line).Trim()
+                            if ($sourceLine.Length -gt 240) {$sourceLine=$sourceLine.Substring(0,240)+'...'}
+                            $failure.location=@{file=$_.InvocationInfo.ScriptName;line=$_.InvocationInfo.ScriptLineNumber;command=$sourceLine;stack=@($_.ScriptStackTrace -split "`r?`n" | Select-Object -First 3)}
+                            $reply.result=@{content=@(@{type='text';text=($failure | ConvertTo-Json -Depth 8 -Compress)});isError=$true}
+                        }
                     }
                     default {$reply.error=@{code=-32601;message='Method not found.'}}
                 }

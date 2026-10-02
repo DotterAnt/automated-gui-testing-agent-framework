@@ -1,6 +1,6 @@
 # Persistent exploration tools
 
-`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell. It exposes `agta_explore`, `agta_replay`, `agta_inspect`, `agta_help` and read-only `agta_validate`. One process retains state/ownership. Version 1.3.0 defaults MCP authoring to Live, also exposes replay through agta_explore, and retains failed Verify sessions. Reconnect after updating. CSV/policy, receipt and assertion checks apply; no app-specific routes or extra packages are needed.
+`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell. It exposes `agta_explore`, `agta_replay`, `agta_inspect`, `agta_help` and read-only `agta_validate`. One process retains state/ownership. Version 1.3.1 fixes setup path validation, preserves setup source locations and requires explicit CSV row attribution for input Repair. Live remains the default, with replay also available through agta_explore and failed Verify sessions retained. Reconnect after updating. CSV/policy, receipt and assertion checks apply; no app-specific routes or extra packages are needed.
 
 The server exposes GuiNavigation and VisibleControls by default. It rejects AllowShortcuts even with a nonempty policyReason and blocks mutations of older permissive runs; Status remains available for diagnosis. A model-written explanation is not user authorization. Application actions such as Open/Print must use visible menu/button routes. The operator may add `-EnableShortcutPolicy` to server startup only for an explicitly authorized shortcut task; tools cannot enable that capability, and per-run PolicyReason is still required. Do not add this flag for ordinary GUI tests. These are authoring checks, not an execution sandbox for arbitrary shell code.
 
@@ -28,7 +28,7 @@ Replay is also available through the established exploration tool:
 {"action":"Replay","replayAction":"Start","runRoot":"<existing absolute run folder>","scriptPath":"<absolute saved template path>"}
 ~~~
 
-Use replayAction Step/Status/Repair/Skip/Close/Verify on that same runRoot. Default Live mode allows only read-only Batch discovery; GUI input must come from saved bodies or live Repair. Unqualified script revisions are blocked from standalone full replay before GUI dispatch. Once the final revision qualifies, that exact delivered script can run standalone. Failed Verify retains the live session and blocks another full Verify until review/recovery/Close. Existing manifests without workflowMode retain compatibility behavior.
+Use replayAction Step/Status/Repair/Skip/Close/Verify on that same runRoot. Input Repair must include `stepIndex` for the actual CSV row; Repair does not advance the plan. Retry Step, or Skip a manually completed pending row with a reason. Tool arguments are literal values, so pass an observed JSON selector object rather than a PowerShell variable name. Default Live mode allows only read-only Batch discovery. Unqualified script revisions are blocked from standalone full replay before GUI dispatch. Once the final revision qualifies, that exact delivered script can run standalone. Failed Verify retains the live session and blocks another full Verify until review/recovery/Close. Existing manifests without workflowMode retain compatibility behavior.
 
 ## Legacy recorded batches
 

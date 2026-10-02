@@ -32,6 +32,10 @@ try {
     $json=$guard | ConvertTo-Json -Compress
     $values=@(Resolve-AGTACommandArguments click @('-WindowSelectorJson',$json))
     Check ($values[1] -ceq $json -and ($values[1] | ConvertFrom-Json).Name -eq $guard.Name) 'A ConvertTo-Json output string was classified as a structured object.'
+    $failure=Reject {Resolve-AGTACommandArguments click @('-WindowSelectorJson','$LAST_FOREGROUND_SELECTOR')} 'An unresolved tool variable reached JSON/GUI dispatch.'
+    Check ($failure.Exception.Message -match 'Tool requests are literal') 'An unresolved JSON variable lacked actionable guidance.'
+    $values=@(Resolve-AGTACommandArguments type @('-Text','$literal text'))
+    Check ($values[1] -ceq '$literal text') 'The JSON-variable guard rejected ordinary dollar-prefixed text.'
     $path=Join-Path $root 'save path.docx'
     $values=@(Resolve-AGTACommandArguments type @('-Text',$path))
     Check ($values[1] -ceq $path) 'A Join-Path output string was rejected as structured text.'

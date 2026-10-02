@@ -26,7 +26,10 @@ function Resolve-AGTACommandArguments {
         # Cmdlet output strings (Join-Path, ConvertTo-Json, etc.) can also test
         # as PSCustomObject because PowerShell attaches an ETS wrapper. Scalars
         # must be handled first so repeated normalization stays idempotent.
-        if ($value -is [string] -or $value.GetType().IsValueType) { [string]$value }
+        if ($value -is [string] -or $value.GetType().IsValueType) {
+            if ($i -gt 0 -and [string]$Arguments[$i-1] -match '^--?[A-Za-z]+Json$' -and [string]$value -match '^\$') {throw "CLI JSON argument at index $i is an unresolved script variable. Tool requests are literal: pass the observed JSON object/value, not a variable name. No action was dispatched."}
+            [string]$value
+        }
         elseif ($value -is [Collections.IDictionary] -or $value -is [pscustomobject] -or $value -is [array]) {
             if ($i -eq 0 -or [string]$Arguments[$i-1] -notmatch '^--?[A-Za-z]+Json$') {
                 throw "Structured CLI argument at index $i needs a preceding *Json option. No action was dispatched."

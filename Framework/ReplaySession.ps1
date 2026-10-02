@@ -40,8 +40,14 @@ function Get-AGTAPlanDefinition {
             if ($parent -is [Management.Automation.Language.FunctionDefinitionAst] -or $parent -is [Management.Automation.Language.ScriptBlockExpressionAst]) {$deferred=$true;break}
             $parent=$parent.Parent
         }
-        if (-not $deferred -and ($call.GetCommandName() -match '^(Invoke-(Step|Potato|Recorded|TestCleanup|EvidenceScreenshot)|Register-(OpenedProcess|CreatedExternalPath)|Complete-AGTA)' -or
-            $call.Extent.Text -match '(?i)potato\.ps1')) {throw 'GUI actions and cleanup belong inside StepBodies, not plan setup.'}
+        $commandName=$call.GetCommandName()
+        $invokedExpression=$call.CommandElements[0].Extent.Text
+        $directCli=($commandName -match '(?i)(?:^|[\\/])potato\.ps1$' -or
+            ($call.InvocationOperator -in @('Ampersand','Dot') -and $invokedExpression -match '(?i)^\$(?:script:)?PotatoCliPath$|potato\.ps1') -or
+            ($commandName -match '^(?:powershell|pwsh)(?:\.exe)?$' -and $call.Extent.Text -match '(?i)potato\.ps1|\$PotatoCliPath'))
+        if (-not $deferred -and ($commandName -match '^(Invoke-(Step|Potato|Recorded|TestCleanup|EvidenceScreenshot)|Register-(OpenedProcess|CreatedExternalPath)|Complete-AGTA)' -or $directCli)) {
+            throw ('Plan setup line '+$call.Extent.StartLineNumber+': '+$commandName+'. GUI actions and cleanup belong inside StepBodies, not plan setup.')
+        }
     }
     $hash=[Security.Cryptography.SHA256]::Create()
     try {
@@ -49,10 +55,7 @@ function Get-AGTAPlanDefinition {
         $scriptHash=[BitConverter]::ToString($hash.ComputeHash($bytes)).Replace('-','')
     } finally {$hash.Dispose()}
     if (-not $ast.ParamBlock) {throw 'Use the generated template parameter block for a live plan.'}
-    $pathLiteral=$ScriptPath.Replace("'","''")
-    $rootLiteral=(Split-Path $ScriptPath).Replace("'","''")
-    $executionPrefix=$prefix.Insert($ast.ParamBlock.Extent.EndOffset,"`n`$PSCommandPath='$pathLiteral'`n`$PSScriptRoot='$rootLiteral'`n")
-    @{path=$ScriptPath;prefix=$executionPrefix;bodies=$bodies;setupHash=$setupHash;scriptHash=$scriptHash}
+    @{path=$ScriptPath;prefix=$prefix;bodies=$bodies;setupHash=$setupHash;scriptHash=$scriptHash}
 }
 
 function Import-AGTAPlanSession {
@@ -77,7 +80,9 @@ function Import-AGTAPlanSession {
             if ($manifest.policyReason) {$parameters.PolicyReason=$manifest.policyReason}
             # Dot sourcing only the validated setup keeps its variables in this
             # module. Scriptblock literals are defined here but not yet invoked.
-            . ([scriptblock]::Create($definition.prefix)) @parameters | Out-Null
+            $prefixTokens=$null;$prefixErrors=$null
+            $prefixAst=[Management.Automation.Language.Parser]::ParseInput($definition.prefix,$definition.path,[ref]$prefixTokens,[ref]$prefixErrors)
+            . ($prefixAst.GetScriptBlock()) @parameters | Out-Null
             $script:StepBodies=@(foreach ($body in $script:AGTAPlanDefinition.bodies) {[scriptblock]::Create($body.Substring(1,$body.Length-2))})
         }
         $context=& $module {Get-AGTAGeneratedTestContext}
@@ -157,10 +162,14 @@ function Invoke-AGTAPlanVerification {
 }
 
 function Invoke-AGTAPlanRepair {
-    param($Session,[object[]]$Requests)
+    param($Session,[object[]]$Requests,[int]$StepIndex=0)
     if ($Session.closed -or $Session.needsReview) {throw 'Inspect Status before repairing a failed live session.'}
     if ($Requests.Count -lt 1 -or $Requests.Count -gt 20) {throw 'Repair accepts 1..20 sequential commands.'}
-    $ctx=$Session.context;$ctx.ActiveStep=[Math]::Min($Session.nextStepIndex,$ctx.Steps.Count)
+    $ctx=$Session.context
+    if (-not $StepIndex -and @($Requests | Where-Object {$_.command -notin @('observe','select','read','read-pdf','windows','state','screenshot','wait-element','wait-file')}).Count) {throw 'Repair GUI input requires an explicit stepIndex identifying the actual CSV row. Requests are literal values, not script variables. Retry Step after restoring its entry state, or Skip a manually completed pending row before continuing.'}
+    if (-not $StepIndex) {$StepIndex=[Math]::Min($Session.nextStepIndex,$ctx.Steps.Count)}
+    if ($StepIndex -lt 1 -or $StepIndex -gt $ctx.Steps.Count) {throw 'Repair stepIndex must identify an existing CSV row.'}
+    $ctx.ActiveStep=$StepIndex
     $ctx.AttemptId=[guid]::NewGuid().ToString('N')
     $activeWatch=[Diagnostics.Stopwatch]::StartNew()
     try {
@@ -173,7 +182,7 @@ function Invoke-AGTAPlanRepair {
             if (-not $success) {$Session.needsReview=$true}
             $data=$result.data
             if ($request.command -eq 'windows') {$data=ConvertTo-AGTACompactWindowData $data}
-            [ordered]@{ok=$success;runKind='Diagnostic';qualifying=$false;command=$request.command;data=$data;error=$result.error;
+            [ordered]@{ok=$success;runKind='Diagnostic';qualifying=$false;stepIndex=$ctx.ActiveStep;nextStepIndex=$Session.nextStepIndex;command=$request.command;data=$data;error=$result.error;
                 explorationCommandId=$result.explorationCommandId;verification=$result.verification}
             if (-not $success) {break}
         }
@@ -198,7 +207,7 @@ function Get-AGTAPlanStatus {
         attempts=@($Session.attempts | ForEach-Object {@{stepIndex=$_.stepIndex;attempt=$_.attempt;status=$_.status;countsAsSuccessfulStep=$_.countsAsSuccessfulStep;error=$_.error}});
         commands=@(Get-AGTACommandDiagnostics -Path $Session.context.CommandLogPath -Last 3);
         resultPath=$Session.context.ResultPath;executionEvidenceRoot=$Session.context.ExecutionEvidenceRoot;
-        next='Inspect retained failure evidence/command details. Restore the failed body entry state before retrying; use Repair for sequential CLI actions, Skip only for explicit diagnostic continuation.'}
+        next='Inspect retained evidence. Repair GUI input requires its actual CSV stepIndex. Restore entry state and retry Step, or Skip a manually completed pending row to advance; Skip never counts as PASS.'}
 }
 
 function Close-AGTAPlanSession {

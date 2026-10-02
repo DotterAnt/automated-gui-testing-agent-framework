@@ -120,6 +120,20 @@ try {
     $journal=Get-Content $session.diagnosticResultPath -Raw | ConvertFrom-Json
     Check ($journal.attempts.Count -eq 4 -and $journal.attempts[1].status -eq 'DIAGNOSTIC_FAILURE' -and $journal.attempts[2].status -eq 'RECOVERY_SUCCESS') 'Repair erased failed attempt history.'
 
+    $run=Join-Path $root 'repair-rows';$path=New-Plan $run $good
+    $session=Import-AGTAPlanSession $run $path;$sessions+=,$session;Install-Fixture $session
+    Invoke-AGTAPlanStep $session | Out-Null
+    Reject {Invoke-AGTAPlanRepair $session @(@{command='click';arguments=@('-Name','Fixture')})} 'Unlabelled input repair silently inherited the pending row.' | Out-Null
+    Reject {Invoke-AGTAPlanRepair $session @(@{command='read';arguments=@('-Name','Fixture')}) -StepIndex 4} 'Repair accepted a row outside the CSV.' | Out-Null
+    foreach ($index in 1..3) {
+        $repaired=@(Invoke-AGTAPlanRepair $session @(@{command='click';arguments=@('-Name','Fixture')},@{command='read';arguments=@('-Name','Fixture')}) -StepIndex $index)
+        Check ($repaired[1].stepIndex -eq $index -and $session.nextStepIndex -eq 2) 'Repair receipt row or plan progression was silently changed.'
+        Complete-AGTAExplorationStep $run $index 'Actual row fixture route' 'Fixture reviewed' @($repaired[1].explorationCommandId) | Out-Null
+    }
+    $manifest=Get-Content $session.context.ExplorationPath -Raw | ConvertFrom-Json
+    Check ($manifest.steps.Count -eq 3) 'Explicit repair receipts could not be recorded for each actual CSV row.'
+    Check (-not (Close-AGTAPlanSession $session).qualifying) 'Manual repair recording became a proper script pass.'
+
     $run=Join-Path $root 'skip';$path=New-Plan $run $bad
     $session=Import-AGTAPlanSession $run $path;$sessions+=,$session;Install-Fixture $session
     Invoke-AGTAPlanStep $session | Out-Null;Invoke-AGTAPlanStep $session | Out-Null;Get-AGTAPlanStatus $session | Out-Null

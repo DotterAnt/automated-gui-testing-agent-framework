@@ -133,21 +133,21 @@ try {
     # A real stdio session loads the saved plan once. Read-only commands avoid
     # touching user applications; sealed fixture exploration is test scaffolding.
     $livePath=Join-Path $root 'live.ps1'
-    @'
-[CmdletBinding()]
-param([string]$PotatoCliPath,[string]$TestCaseCsv,[string]$RunRoot,[string]$FrameworkRoot,[string]$ExplorationPath,[string]$InteractionPolicy='GuiNavigation',[string]$Transport='InProcess',[string]$OutputMode='Compact')
-. (Join-Path $FrameworkRoot 'Framework\GeneratedScriptRuntime.ps1')
-$Context=Initialize-AGTAGeneratedTest -PotatoCliPath $PotatoCliPath -TestCaseCsv $TestCaseCsv -RunRoot $RunRoot -ExplorationPath $ExplorationPath -InteractionPolicy $InteractionPolicy -Transport $Transport
-$State=@{calls=0}
+    $template=[IO.File]::ReadAllText((Join-Path $frameworkRoot 'templates\GeneratedScript.Template.ps1'))
+    $templatePrefix=$template.Substring(0,$template.IndexOf('$StepBodies = @('))
+    ($templatePrefix+@'
+if (-not $PotatoCliPath) {$PotatoCliPath=Join-Path (Split-Path $FrameworkRoot) 'potato-cli\potato.ps1'}
+$State=@{calls=0;OutputPath=Join-Path $Context.ExecutionEvidenceRoot 'fixture.out';Self=$PSCommandPath}
 $StepBodies=@({param([ref]$Commands,[ref]$Evidence)
     $State.calls++
     $observed=Invoke-StepCommand $Commands state @()
     Assert-PotatoOk $observed
     Assert-ExpectedResult ($State.calls -eq 1) 'Fixture plan setup/body were invoked once'
+    Assert-ExpectedResult ($State.Self -and (Test-Path -LiteralPath $State.Self) -and $State.OutputPath -eq (Join-Path $Context.ExecutionEvidenceRoot 'fixture.out')) 'Saved setup filename/context retained'
 })
 Invoke-AGTATestPlan -StepBodies $StepBodies -OutputMode $OutputMode
 exit (Get-AGTATestExitCode)
-'@ | Set-Content $livePath
+'@) | Set-Content $livePath
     $sealedManifestPath=Join-Path $sealed 'logs\exploration.json'
     $sealedManifest=Get-Content $sealedManifestPath -Raw | ConvertFrom-Json
     $sealedManifest | Add-Member workflowMode Live -Force
@@ -186,6 +186,39 @@ exit (Get-AGTATestExitCode)
     Check (-not (Values $closed)[0].qualifying) 'Verify recovery qualified as an unrepaired proper run.'
     $verified=Tool @{action='Replay';replayAction='Verify';runRoot=$sealed;includeImages=$false}
     Check (-not $verified.result.isError -and (Values $verified)[0].ok -and (Values $verified)[0].qualifying) 'Final clean Verify did not qualify after live recovery.'
+    $badPath=Join-Path $root 'bad-setup.ps1'
+    $cleanSource.Replace('$State=@{',"Join-Path `$null 'invalid'`n"+'$State=@{') | Set-Content $badPath
+    $badStart=Tool @{action='Replay';replayAction='Start';runRoot=$liveDefault;scriptPath=$badPath;includeImages=$false}
+    $bad=(Values $badStart)[0]
+    Check ($badStart.result.isError -and $bad.error -match 'Path.*null' -and ($bad.location.stack -join ' ') -match [regex]::Escape($badPath)) 'MCP setup failure did not identify the saved script location.'
+    Check ($bad.location.stack.Count -le 3 -and $bad.location.command.Length -le 243) 'MCP setup failure emitted unbounded diagnostic scaffolding.'
+    $rowCsv=Join-Path $root 'repair-rows.csv'
+    'Action,Data,Expected Result','First,,Fixture','Second,,Fixture' | Set-Content $rowCsv
+    $rowRun=Join-Path $root 'repair-rows'
+    Tool @{action='Begin';runRoot=$rowRun;testCaseCsv=$rowCsv;potatoCliPath=$cli} | Out-Null
+    $rowPath=Join-Path $root 'repair-rows.ps1'
+    ($templatePrefix+@'
+$StepBodies=@(
+    {param([ref]$Commands,[ref]$Evidence) $result=Invoke-StepCommand $Commands state @();Assert-PotatoOk $result;Assert-ExpectedResult $result.ok 'State returned'},
+    {param([ref]$Commands,[ref]$Evidence)}
+)
+Invoke-AGTATestPlan -StepBodies $StepBodies -OutputMode $OutputMode
+exit (Get-AGTATestExitCode)
+'@) | Set-Content $rowPath
+    $rowStart=Tool @{action='Replay';replayAction='Start';runRoot=$rowRun;scriptPath=$rowPath;includeImages=$false}
+    Check (-not $rowStart.result.isError) 'MCP failed to start the row attribution fixture after a setup error.'
+    $rowStep=Tool @{action='Replay';replayAction='Step';runRoot=$rowRun;includeImages=$false}
+    Check (-not $rowStep.result.isError -and (Values $rowStep)[0].nextStepIndex -eq 2) 'MCP fixture did not advance to pending row two.'
+    $rowLog=Join-Path $rowRun 'logs\exploration-commands.jsonl'
+    $beforeRepair=@(Get-Content $rowLog).Count
+    $unlabelled=Tool @{action='Replay';replayAction='Repair';runRoot=$rowRun;requests=@(@{command='click';arguments=@('-Name','MustNotDispatch')});includeImages=$false}
+    Check ($unlabelled.result.isError -and (Values $unlabelled)[0].error -match 'explicit stepIndex' -and @(Get-Content $rowLog).Count -eq $beforeRepair) 'Unlabelled MCP repair reached GUI dispatch or was silently attributed to pending row two.'
+    foreach ($index in @(1,2)) {
+        $labelled=Tool @{action='Replay';replayAction='Repair';runRoot=$rowRun;stepIndex=$index;requests=@(@{command='state';arguments=@()});includeImages=$false}
+        $label=(Values $labelled)[0];$receipt=Get-Content $rowLog -Tail 1 | ConvertFrom-Json
+        Check (-not $labelled.result.isError -and $label.stepIndex -eq $index -and $label.nextStepIndex -eq 2 -and $receipt.stepIndex -eq $index) 'Explicit MCP repair lost its row attribution or advanced the plan.'
+    }
+    Tool @{action='Replay';replayAction='Close';runRoot=$rowRun;includeImages=$false} | Out-Null
     $fullHelp=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='cli';names=@('type');detail='full'}}
     $compactHelp=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='cli';names=@('type')}}
     Check (-not $fullHelp.result.isError -and $fullHelp.result.content[0].text.Length -gt $compactHelp.result.content[0].text.Length -and ($compactHelp.result.content[0].text | ConvertFrom-Json).data.commands.type.usage -match 'PathKind') 'Full behavioral help was unavailable or compact signatures were lost.'
@@ -287,6 +320,12 @@ exit (Get-AGTATestExitCode)
         $liveBlocked=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Step';runRoot=$liveGuiRun}}
         Check ($liveBlocked.result.isError -and (Values $liveBlocked)[0].error -match 'Status') 'MCP accepted an unreviewed retry.'
         Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Status';runRoot=$liveGuiRun}} | Out-Null
+        $repair=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Repair';runRoot=$liveGuiRun;stepIndex=1;requests=@(
+            @{command='click';arguments=$scope+@('-Name','Fixture filename','-TimeoutMs','1000')},
+            @{command='read';arguments=$scope+@('-Name','Fixture filename','-TimeoutMs','1000')})}}
+        $repairValues=@(Values $repair)
+        $repairReceipt=Get-Content (Join-Path $liveGuiRun 'logs\exploration-commands.jsonl') -Tail 1 | ConvertFrom-Json
+        Check (-not $repair.result.isError -and $repairValues.Count -eq 2 -and $repairValues[0].stepIndex -eq 1 -and $repairValues[1].nextStepIndex -eq 1 -and $repairReceipt.stepIndex -eq 1) 'Actual MCP GUI repair lost its explicit CSV row or advanced the pending body.'
         $liveGuiSource.Replace('Missing fixture field','Fixture filename') | Set-Content $liveGuiPath
         $liveRetry=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Step';runRoot=$liveGuiRun}}
         Check (-not $liveRetry.result.isError -and (Values $liveRetry)[0].status -eq 'RECOVERY_SUCCESS' -and -not (Values $liveRetry)[0].countsAsSuccessfulStep) 'MCP did not reload/retry only the failed body.'
