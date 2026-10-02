@@ -5,6 +5,9 @@ $frameworkRoot = Split-Path -Parent $PSScriptRoot
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('agta-regression-' + [guid]::NewGuid())
 $cliPath = Join-Path (Split-Path -Parent $frameworkRoot) 'potato-cli\potato.ps1'
 $script:checks=0
+# Negative calls use fixture inputs so the harness itself is not a generated
+# replay containing literal shortcut grants. Authoring tests cover those grants.
+$forbiddenPolicy='AllowShortcuts';$forbiddenCommand='hotkey'
 function Check($ok,$message) { if (-not $ok) { throw $message }; $script:checks++ }
 function Invoke-EvidenceScreenshot { throw 'Fixture: desktop capture disabled.' }
 New-Item -ItemType Directory $testRoot | Out-Null
@@ -108,7 +111,7 @@ try {
     try { Invoke-PotatoJson help @('-InteractionPolicy=AllowShortcuts') | Out-Null } catch {$caught=$true}
     Check ($caught -and -not $ctx.PolicyCompliant) 'Per-command policy override accepted.'
     $caught=$false
-    try { Initialize-AGTAGeneratedTest -PotatoCliPath $cliPath -TestCaseCsv $csv -RunRoot $testRoot -InteractionPolicy AllowShortcuts | Out-Null } catch {$caught=$true}
+    try { Initialize-AGTAGeneratedTest -PotatoCliPath $cliPath -TestCaseCsv $csv -RunRoot $testRoot -InteractionPolicy $forbiddenPolicy | Out-Null } catch {$caught=$true}
     Check $caught 'Relaxed policy accepted without authorization record.'
     $ctx=Initialize-AGTAGeneratedTest -PotatoCliPath $cliPath -TestCaseCsv $csv -RunRoot $testRoot
     $failed=Invoke-RecordedStep 1 { param($Commands,$Evidence) try { Assert-ExpectedResult $false 'Missing artifact' } catch {} }
@@ -176,7 +179,7 @@ exit (Get-AGTATestExitCode)
         Check ($value.ok -eq [bool]$success -and $code -eq (1-$success)) 'JSON and process exit disagree.'
     }
     Import-Module (Join-Path $frameworkRoot 'Framework\AutomatedGuiTestingAgentFramework.psm1') -Force
-    $api=Invoke-AGTAPotatoJson -PotatoCliPath $cliPath -Command hotkey -Arguments @('-Keys','^s') -RunRoot $testRoot
+    $api=Invoke-AGTAPotatoJson -PotatoCliPath $cliPath -Command $forbiddenCommand -Arguments @('-Keys','^s') -RunRoot $testRoot
     Check (-not $api.ok -and $api.error.type -eq 'InteractionPolicyViolation') 'API exploration bypassed default policy.'
     $valid=$final | ConvertTo-Json -Depth 50 | ConvertFrom-Json
     Check (Test-AGTAGeneratedResult $valid) 'Valid policy/assertion result rejected.'

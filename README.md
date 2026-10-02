@@ -54,7 +54,7 @@ The OpenAI provider reads `OPENAI_API_KEY` from the environment and uses the Res
 
 The API workflow exposes a `set_authoring_stage` tool. The model must enter `planning`, then `exploration`, then `development_iteration`. PoTATo exploration commands are blocked until the exploration stage is active, and generated-script writing/running is blocked until development/iteration is active.
 
-Both workflows default to GuiNavigation: visible GUI routes with audited, bounded navigation keys and focused literal input. An explicitly requested VisibleControls policy remains strict. Application hotkeys and Shortcut clearing require authorized AllowShortcuts; recovery never authorizes a GUI bypass. A completed, evidence-backed exploration of every CSV row is required before generation and execution. See `Invoke-Exploration.ps1` and `docs/AUTHORING.md`.
+Both workflows default to GuiNavigation: visible GUI routes with audited, bounded navigation keys and focused literal input. An explicitly requested VisibleControls policy remains strict. Default MCP disables AllowShortcuts; agent-written reasons and generated-script defaults cannot authorize hotkeys. An operator can enable shortcut capability only for an explicitly authorized task. Recovery never authorizes a GUI bypass. A completed, evidence-backed exploration of every CSV row is required before generation and execution. See `Invoke-Exploration.ps1` and `docs/AUTHORING.md`.
 
 Generated scripts must also clean up after themselves before exiting. They should preserve run-folder evidence, but close any applications they opened and delete fixed-path or external files/state they created that could make a later run fail or take a different path.
 

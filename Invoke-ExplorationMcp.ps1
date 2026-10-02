@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param()
+param([switch]$EnableShortcutPolicy)
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 $env:PSModulePath=(Join-Path $PSHOME 'Modules')+';'+$env:PSModulePath
@@ -9,12 +9,14 @@ $entry=Join-Path $PSScriptRoot 'Invoke-Exploration.ps1'
 $ready=$false
 $negotiated=$false
 $reviewRequired=@{}
+$availablePolicies=@('GuiNavigation','VisibleControls')
+if ($EnableShortcutPolicy) {$availablePolicies+=,'AllowShortcuts'}
 $tools=@(
-    @{name='agta_explore';description='Recorded GUI exploration in a persistent process. Begin once with a unique absolute runRoot/testCaseCsv. Batch up to 20 known sequential commands, ending at an observation for unknown transitions. RecordSteps only with verification.eligible receipts after reviewing them. Close owned windows before Complete. After a failed Batch, call Status and inspect the outcome before a separate recovery Batch.';
+    @{name='agta_explore';description='Recorded GUI exploration in a persistent process. Use visible controls for application actions; a model-written policyReason cannot authorize shortcuts. Begin once with a unique absolute runRoot/testCaseCsv. Batch up to 20 known sequential commands, ending at an observation for unknown transitions. RecordSteps only with verification.eligible receipts after reviewing them. Close owned windows before Complete. After a failed Batch, call Status and inspect the outcome before a separate recovery Batch.';
         inputSchema=@{type='object';required=@('action','runRoot');additionalProperties=$false;properties=@{
             action=@{type='string';enum=@('Begin','Batch','RecordSteps','Status','Complete')};runRoot=@{type='string'};
             testCaseCsv=@{type='string'};potatoCliPath=@{type='string'};
-            interactionPolicy=@{type='string';enum=@('GuiNavigation','VisibleControls','AllowShortcuts')};policyReason=@{type='string'};
+            interactionPolicy=@{type='string';enum=$availablePolicies};policyReason=@{type='string';description='Records existing user/testcase authorization, never an agent justification. Does not enable shortcut capability.'};
             requests=@{type='array';items=@{type='object'};description='Batch: {stepIndex,command,arguments:[]} objects. RecordSteps: {stepIndex,route,observedResult,verificationCommandIds:[]} objects. Structured *Json argument values are supported.'}
         }}}
     @{name='agta_help';description='Read the authoring guide/template once, or targeted CLI/runtime signatures. Use topic authoring first; cli/runtime require observed missing names. Full command receipts and results remain on disk.';
@@ -31,6 +33,14 @@ function Invoke-McpTool($Name,$Arguments) {
         foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin $allowed) {throw "Unknown exploration argument: $property"}}
         if ($Arguments.action -cnotin @('Begin','Batch','RecordSteps','Status','Complete') -or -not $Arguments.runRoot -or -not [IO.Path]::IsPathRooted($Arguments.runRoot)) {throw 'Use a supported action and an absolute runRoot.'}
         $runKey=[IO.Path]::GetFullPath($Arguments.runRoot)
+        if (-not $EnableShortcutPolicy) {
+            $savedPolicy=$null
+            $manifestPath=Join-Path $runKey 'logs\exploration.json'
+            if ([IO.File]::Exists($manifestPath)) {$savedPolicy=([IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json).interactionPolicy}
+            if ($Arguments.interactionPolicy -eq 'AllowShortcuts' -or ($Arguments.action -in @('Batch','RecordSteps','Complete') -and $savedPolicy -eq 'AllowShortcuts')) {
+                throw 'Shortcut authorization is disabled in this MCP server. A policyReason cannot enable it. Use GuiNavigation/VisibleControls and observed menu/button routes. Only the operator may enable shortcut capability at server startup after an explicit user request.'
+            }
+        }
         if ($Arguments.action -eq 'Batch' -and $reviewRequired[$runKey]) {throw 'The previous batch failed. Call Status and inspect the failed receipt/actual GUI before submitting a recovery batch.'}
         $parameters=@{Action=$Arguments.action;RunRoot=$Arguments.runRoot;Transport='InProcess';OutputMode='Compact'}
         foreach ($key in @('testCaseCsv','potatoCliPath','interactionPolicy','policyReason')) {if ($Arguments.$key) {$parameters[$key]=$Arguments.$key}}
@@ -52,7 +62,8 @@ function Invoke-McpTool($Name,$Arguments) {
             # Get-Content strings carry provider metadata in PS5. ConvertTo-Json
             # can serialize their PSDrive/.NET object graph instead of plain text.
             $context=@{guide=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'docs\AUTHORING.md'));
-                template=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'templates\GeneratedScript.Template.ps1'))}
+                template=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'templates\GeneratedScript.Template.ps1'));
+                interactionPolicies=$availablePolicies;shortcutPolicyEnabled=[bool]$EnableShortcutPolicy}
             if ($Arguments.testCaseCsv) {$context.steps=@(Import-Csv -LiteralPath $Arguments.testCaseCsv)}
             $responses=@(($context | ConvertTo-Json -Depth 5 -Compress))
         } elseif ($Arguments.topic -in @('cli','runtime')) {
@@ -95,7 +106,7 @@ while ($null -ne ($line=[Console]::ReadLine())) {
                     'initialize' {
                         if ($request.params.protocolVersion -isnot [string] -or -not $request.params.protocolVersion) {throw 'Initialize requires protocolVersion.'}
                         $version=if ($request.params.protocolVersion -in @('2024-11-05','2025-03-26','2025-06-18')) {$request.params.protocolVersion} else {'2025-06-18'}
-                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.0.1'}}
+                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.0.2'}}
                         $negotiated=$true;$ready=$false
                     }
                     'ping' {$reply.result=@{}}

@@ -60,6 +60,16 @@ function Test-AGTAGeneratedScript {
     $parseErrors = $null
     $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$parseErrors)
     foreach ($error in @($parseErrors)) { $issues += "Line $($error.Extent.StartLineNumber): $($error.Message)" }
+    foreach ($parameter in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.ParameterAst]}, $true))) {
+        $default=$parameter.DefaultValue
+        if ($default -isnot [Management.Automation.Language.StringConstantExpressionAst] -and $default -isnot [Management.Automation.Language.ExpandableStringExpressionAst]) {continue}
+        if ($parameter.Name.VariablePath.UserPath -eq 'InteractionPolicy' -and $default.Value -eq 'AllowShortcuts') {
+            $issues+="Line $($parameter.Extent.StartLineNumber): generated scripts must default to GuiNavigation or an explicitly requested VisibleControls policy. AllowShortcuts must be supplied by an authorized caller, never enabled by a script default."
+        }
+        if ($parameter.Name.VariablePath.UserPath -eq 'PolicyReason' -and -not [string]::IsNullOrWhiteSpace($default.Value)) {
+            $issues+="Line $($parameter.Extent.StartLineNumber): a generated PolicyReason default cannot supply user authorization. Leave it empty and accept an existing authorization from the caller."
+        }
+    }
     if ($PotatoCliPath -and -not (Test-Path -LiteralPath $PotatoCliPath -PathType Leaf)) { $issues += "CLI entry point not found: $PotatoCliPath" }
     if ($TestCaseCsv) {
         if (-not (Test-Path -LiteralPath $TestCaseCsv -PathType Leaf)) { $issues += "Testcase CSV not found: $TestCaseCsv" }
@@ -83,6 +93,11 @@ function Test-AGTAGeneratedScript {
     $localFunctions = @{}
     foreach ($assignment in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst]}, $true))) {
         if ($assignment.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+            $assignment.Left.VariablePath.UserPath -match '^(?:(?:global|script|local):)?InteractionPolicy$' -and
+            $assignment.Right.Extent.Text -match '^\s*([''"])AllowShortcuts\1\s*$') {
+            $issues+="Line $($assignment.Extent.StartLineNumber): generated code cannot grant itself AllowShortcuts. Preserve the policy supplied by the caller."
+        }
+        if ($assignment.Left -is [Management.Automation.Language.VariableExpressionAst] -and
             $assignment.Left.VariablePath.UserPath -match '^(?:(?:global|script|local):)?(?:HOME|PID|PSVersionTable|PSEdition|PSHOME|Host|ExecutionContext|ShellId|true|false)$') {
             $issues += "Line $($assignment.Extent.StartLineNumber): '$($assignment.Left.Extent.Text)' is an automatic read-only/constant variable. Use a testcase-specific variable name before running the GUI."
         }
@@ -93,6 +108,19 @@ function Test-AGTAGeneratedScript {
     $checked = 0
     foreach ($call in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst]}, $true))) {
         $name = $call.GetCommandName()
+        $parts=@($call.CommandElements)
+        for ($i=1;$i -lt $parts.Count;$i++) {
+            if ($parts[$i] -isnot [Management.Automation.Language.CommandParameterAst]) {continue}
+            $value=$parts[$i].Argument
+            if (-not $value -and $i+1 -lt $parts.Count) {$value=$parts[$i+1]}
+            if ($value -isnot [Management.Automation.Language.StringConstantExpressionAst]) {continue}
+            if ($parts[$i].ParameterName -eq 'InteractionPolicy' -and $value.Value -eq 'AllowShortcuts') {
+                $issues+="Line $($parts[$i].Extent.StartLineNumber): generated calls cannot hardcode AllowShortcuts. Use the declared caller policy and its existing authorization."
+            }
+            if ($parts[$i].ParameterName -eq 'Command' -and $value.Value -eq 'hotkey' -and $InteractionPolicy -ne 'AllowShortcuts') {
+                $issues+="Line $($parts[$i].Extent.StartLineNumber): hotkey is forbidden by $InteractionPolicy. Use observed visible controls; navigation keys remain available under GuiNavigation."
+            }
+        }
         if ($name -eq 'Read-AGTAArtifactBytes' -and -not $localFunctions.ContainsKey($name)) {
             $parts=@($call.CommandElements)
             for ($i=1;$i -lt $parts.Count;$i++) {

@@ -1,6 +1,6 @@
 # Generated Script Contract
 
-Start with `AUTHORING.md` and the template. GuiNavigation is the default; preserve an explicitly requested VisibleControls policy. Navigation and focused opaque input require per-command reason/evidence. Application hotkeys/Shortcut clearing require explicit AllowShortcuts authorization. A selector failure never authorizes a non-GUI route.
+Start with `AUTHORING.md` and the template. GuiNavigation is the default; preserve an explicitly requested VisibleControls policy. Navigation and focused opaque input require per-command reason/evidence. Application actions use observed menu/buttons; an accelerator or agent-written reason is not user authorization. Default MCP disables AllowShortcuts. Application hotkeys/Shortcut clearing require explicit user/testcase authorization and operator-enabled capability. A selector failure never authorizes a bypass.
 
 Generated testcase scripts must follow this contract so different agents and API providers produce comparable artifacts.
 
@@ -173,7 +173,7 @@ Coordinate clicks and drags are allowed only when selector-based automation is n
 
 ## Runtime additions
 
-The template accepts `-InteractionPolicy`, `-PolicyReason`, and `-Transport`. InProcess is the default; Process preserves the previous transport. Policy is fixed at initialization. Result `interactionPolicy` records mode, reason, and compliance. `timing` records totalMs, wrapperMs, backendMs, commandOverheadMs, waitMs, cleanupMs, and otherMs; wait/cleanup overlap command timing. `Complete-AGTAGeneratedTest -PassThru` returns the result object without emitting JSON and never exits its caller. Entry points must emit the result and then call `exit (Get-AGTATestExitCode)`.
+The template accepts `-InteractionPolicy`, `-PolicyReason`, and `-Transport`. Generated scripts must default to GuiNavigation or explicitly requested VisibleControls, leave PolicyReason empty and preserve the caller's policy. They cannot enable AllowShortcuts through defaults, assignments or literal call arguments; an authorized caller supplies an exception externally. InProcess is the default; Process preserves the previous transport. Policy is fixed at initialization. Result `interactionPolicy` records mode, reason, and compliance. `timing` records totalMs, wrapperMs, backendMs, commandOverheadMs, waitMs, cleanupMs, and otherMs; wait/cleanup overlap command timing. `Complete-AGTAGeneratedTest -PassThru` returns the result object without emitting JSON and never exits its caller. Entry points must emit the result and then call `exit (Get-AGTATestExitCode)`.
 
 Use `Read-AGTAArtifactBytes` / `Assert-ArtifactPrefix` for bounded shared reads after stable-file waits; content assertions still belong to the testcase. Direct static `File.ReadAllBytes` calls are rejected in generated-script preflight because they can conflict with the application's open file handle. Runtime `start` defaults to RequireNewWindow: it allows existing processes, requires a new window, and registers either a new process or just the new window in an existing host. Explicit RequireNewProcess retains strict process isolation. Explicit `Register-OpenedProcess -StartResult` remains idempotent but is not needed after `Invoke-StepCommand start`; legacy process-name registration is rejected.
 

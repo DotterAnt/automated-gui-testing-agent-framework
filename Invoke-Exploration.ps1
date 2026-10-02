@@ -122,7 +122,7 @@ try {
             # in generated replays. A malformed later request dispatches nothing.
             foreach ($request in $requests) {
                 if ($request.stepIndex -lt 1 -or $request.stepIndex -gt $m.stepCount -or -not $request.command) { throw 'Every command needs a valid stepIndex and command; no action was dispatched.' }
-                $request.arguments=@(Resolve-AGTACommandArguments $request.command @($request.arguments))
+                $request.arguments=@(Resolve-AGTACommandArguments $request.command @($request.arguments) -InteractionPolicy $InteractionPolicy)
             }
             $requestIndex=0
             foreach ($request in $requests) {
@@ -155,7 +155,7 @@ try {
 } catch {
     $failure=@{ok=$false;error=$_.Exception.Message}
     # Preserve the original error even if no usable manifest exists yet.
-    try { $failure.workflow=Get-AGTAExplorationWorkflow -RunRoot $RunRoot -Result $failure } catch { }
+    try { $failure.workflow=Get-AGTAExplorationWorkflow -RunRoot $RunRoot -Result $failure -Command $Action } catch { }
     $failure | ConvertTo-Json -Depth 10 -Compress
     exit 1
 }

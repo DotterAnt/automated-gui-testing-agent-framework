@@ -45,6 +45,7 @@ try {
     $server.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}');$server.StandardInput.Flush()
     $list=Rpc 'tools/list' @{}
     Check ($list.result.tools.Count -eq 2 -and $list.result.tools[0].inputSchema.required -contains 'runRoot') 'Tool discovery lost input schemas.'
+    Check ('AllowShortcuts' -notin $list.result.tools[0].inputSchema.properties.interactionPolicy.enum) 'Default MCP schema exposed agent-enabled shortcuts.'
     $unknown=Rpc 'tools/call' @{name='unknown';arguments=@{}}
     Check ($unknown.error.code -eq -32602) 'Unknown tool was not a protocol error.'
     $unknown=Rpc 'unknown/method' @{}
@@ -54,6 +55,15 @@ try {
     Check (-not $response.result.isError -and $begin.ok -and $begin.next -match 'agta_explore' -and $begin.mcpTiming) 'MCP Begin lost configuration/timing or advertised the shell transport.'
     $response=Tool @{action='Begin';runRoot=(Join-Path $root 'unauthorized');testCaseCsv=$csv;potatoCliPath=$cli;interactionPolicy='AllowShortcuts'}
     Check ($response.result.isError -and (Values $response)[0].error -match 'authorization') 'MCP bypassed interaction-policy authorization.'
+    $response=Tool @{action='Begin';runRoot=(Join-Path $root 'self-authorized');testCaseCsv=$csv;potatoCliPath=$cli;interactionPolicy='AllowShortcuts';policyReason='The application exposes required file actions through accelerators'}
+    Check ($response.result.isError -and (Values $response)[0].error -match 'cannot enable' -and -not [IO.File]::Exists((Join-Path $root 'self-authorized\logs\exploration.json'))) 'A model-written reason enabled shortcut capability or initialized an unauthorized run.'
+    . (Join-Path $frameworkRoot 'Framework\Exploration.ps1')
+    $legacyRun=Join-Path $root 'legacy-shortcut-policy'
+    Initialize-AGTAExploration $legacyRun $csv AllowShortcuts $cli | Out-Null
+    $response=Tool @{action='Batch';runRoot=$legacyRun;requests=@(@{stepIndex=1;command='help';arguments=@('-Topic','click')})}
+    Check ($response.result.isError -and (Values $response)[0].error -match 'disabled' -and -not [IO.File]::Exists((Join-Path $legacyRun 'logs\exploration-commands.jsonl'))) 'An old permissive run bypassed the MCP capability boundary.'
+    $response=Tool @{action='Status';runRoot=$legacyRun}
+    Check (-not $response.result.isError -and (Values $response)[0].interactionPolicy -eq 'AllowShortcuts') 'Default MCP prevented read-only diagnosis of an old run.'
     $unicode='Fixture '+[char]0x151+[char]0x4e2d
     $response=Tool @{action='Batch';runRoot=$run;requests=@(@{stepIndex=1;command='help';arguments=@('-Topic','type','-WindowSelectorJson',@{Name=$unicode;ClassName='#32770'})})}
     $receipt=Get-Content -LiteralPath (Join-Path $run 'logs\exploration-commands.jsonl') -Tail 1 | ConvertFrom-Json
@@ -92,6 +102,7 @@ try {
     $authoring=(Values $help)[0]
     Check (-not $help.result.isError -and $authoring.guide -is [string] -and $authoring.template -is [string] -and $authoring.steps[0].Action -eq 'Fixture') 'Authoring guide/template/CSV context failed or serialized provider metadata instead of strings.'
     Check ($authoring.guide -ceq [IO.File]::ReadAllText((Join-Path $frameworkRoot 'docs\AUTHORING.md')) -and $authoring.template -ceq [IO.File]::ReadAllText((Join-Path $frameworkRoot 'templates\GeneratedScript.Template.ps1'))) 'MCP changed authoring source content.'
+    Check (-not $authoring.shortcutPolicyEnabled -and 'AllowShortcuts' -notin $authoring.interactionPolicies) 'Authoring context lost the active shortcut capability boundary.'
     $response=Rpc 'tools/call' @{name='agta_explore';arguments=@{action='Status';runRoot=$run;Transport='Process'}}
     Check ($response.result.isError -and (Values $response)[0].error -match 'Unknown') 'MCP accepted an unvalidated transport override.'
     $server.StandardInput.WriteLine('{');$server.StandardInput.Flush()
@@ -101,7 +112,7 @@ try {
     Check (-not $ping.error -and $ping.result -and -not $server.HasExited) 'MCP did not recover after protocol errors.'
     if ($Gui) {
         $title='AGTA MCP fixture '+[guid]::NewGuid().ToString('N')
-        $child=& (Join-Path $PSScriptRoot 'support\Start-ArgumentFixture.ps1') $root $title
+        $child=& (Join-Path $PSScriptRoot 'support\Start-ArgumentFixture.ps1') $root $title -Menus
         $guiRun=Join-Path $root 'gui'
         Tool @{action='Begin';runRoot=$guiRun;testCaseCsv=$csv;potatoCliPath=$cli} | Out-Null
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
@@ -127,6 +138,22 @@ try {
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='read';arguments=$scope+@('-AutomationId','Filename','-TimeoutMs','1000')})}
         $read=(Values $response)[0]
         Check (-not $response.result.isError -and $read.data.text -ceq $path) 'Rejected MCP input changed the real field.'
+        foreach ($route in @(@{command='Fixture Open command';dialog='Fixture Open'},@{command='Fixture Print command';dialog='Fixture Print'})) {
+            $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
+                @{stepIndex=1;command='click';arguments=@('-Name','Fixture File','-ControlType','MenuItem')},
+                @{stepIndex=1;command='wait-element';arguments=@('-Name',$route.command,'-TimeoutMs','1500')})}
+            Check (-not $response.result.isError -and (Values $response)[-1].data.exists) ('MCP did not open the actual visible menu: '+$response.result.content[0].text)
+            $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
+                @{stepIndex=1;command='click';arguments=@('-Name',$route.command,'-ControlType','MenuItem')},
+                @{stepIndex=1;command='windows';arguments=@('-Foreground','-WindowTitle',$route.dialog,'-TimeoutMs','3000')})}
+            $dialog=(Values $response)[-1]
+            Check (-not $response.result.isError -and $dialog.data.count -eq 1 -and $dialog.data.foregroundSelector.Name -eq $route.dialog) ('MCP menu action did not open its actual dialog: '+$response.result.content[0].text)
+            $dialogScope=@('-Scope','ForegroundWindow','-WindowSelectorJson',$dialog.data.foregroundSelector,'-FallbackReason','Observed fixture modal','-FallbackEvidence',$dialog.explorationCommandId)
+            $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
+                @{stepIndex=1;command='click';arguments=$dialogScope+@('-Name','Fixture Cancel','-ControlType','Button')},
+                @{stepIndex=1;command='windows';arguments=@('-Foreground','-WindowTitle',$title,'-TimeoutMs','3000')})}
+            Check (-not $response.result.isError -and (Values $response)[-1].data.count -eq 1) 'MCP did not close the actual menu dialog through its visible button.'
+        }
         $response=Tool @{action='RecordSteps';runRoot=$guiRun;requests=@(@{stepIndex=1;route='Focused observed fixture, typed and read literal filename';observedResult='Actual Unicode path read back';verificationCommandIds=@($typed.explorationCommandId,$read.explorationCommandId)})}
         Check (-not $response.result.isError) 'MCP could not record actual GUI verification receipts.'
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
@@ -163,7 +190,21 @@ try {
     }
     $server.StandardInput.Close()
     Check ($server.WaitForExit(5000) -and $server.ExitCode -eq 0) 'EOF left an MCP worker running.'
-    $result=@{checks=$script:checks;gui=[bool]$Gui;guiDisappearanceMs=$(if ($Gui) {$gone.durationMs});samples=$samples;serverProcessId=$server.Id;powershell=$PSVersionTable.PSVersion.ToString();
+    $primaryServerId=$server.Id;$server.Dispose()
+    # Operator opt-in is a startup setting, never a tool-call argument. No GUI
+    # shortcut is sent in this capability/authorization test.
+    $info.Arguments+=' -EnableShortcutPolicy'
+    $server=[Diagnostics.Process]::Start($info);$stderr=$server.StandardError.ReadToEndAsync()
+    Rpc initialize @{protocolVersion='2025-06-18';capabilities=@{};clientInfo=@{name='operator-fixture';version='1'}} | Out-Null
+    $server.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}');$server.StandardInput.Flush()
+    $list=Rpc 'tools/list' @{}
+    Check ('AllowShortcuts' -in $list.result.tools[0].inputSchema.properties.interactionPolicy.enum) 'Operator-enabled shortcut capability was unavailable.'
+    $response=Tool @{action='Begin';runRoot=(Join-Path $root 'operator-without-reason');testCaseCsv=$csv;potatoCliPath=$cli;interactionPolicy='AllowShortcuts'}
+    Check ($response.result.isError -and (Values $response)[0].error -match 'authorization') 'Operator capability removed the per-run authorization record.'
+    $response=Tool @{action='Begin';runRoot=(Join-Path $root 'operator-authorized');testCaseCsv=$csv;potatoCliPath=$cli;interactionPolicy='AllowShortcuts';policyReason='Explicit user authorization fixture'}
+    Check (-not $response.result.isError -and (Values $response)[0].ok) 'Operator capability plus recorded authorization failed.'
+    $server.StandardInput.Close();Check ($server.WaitForExit(5000) -and $server.ExitCode -eq 0) 'Opt-in MCP server did not close on EOF.'
+    $result=@{checks=$script:checks;gui=[bool]$Gui;guiDisappearanceMs=$(if ($Gui) {$gone.durationMs});samples=$samples;serverProcessId=$primaryServerId;powershell=$PSVersionTable.PSVersion.ToString();
         note='Sequential real read-only state receipts. MCP uses one persistent PS5 process; FreshShellDirect creates a NoProfile PS5 caller and reuses the Auto worker. Excludes external agent/tool transport and one-time initialization.'}
     if ($OutFile) {$result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $OutFile -Encoding UTF8}
     $result | ConvertTo-Json -Depth 6 -Compress

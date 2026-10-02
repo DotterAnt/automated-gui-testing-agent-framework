@@ -19,6 +19,22 @@ try {
     } finally { Pop-Location }
     Reject { Complete-AGTAExploration $root $csv GuiNavigation } 'Empty exploration passed.'
     Reject { Complete-AGTAExplorationStep $root 1 'route' 'result' 'fabricated-id' } 'Invented evidence passed.'
+    $lateRoot=Join-Path $root 'late-recording'
+    Initialize-AGTAExploration $lateRoot $csv GuiNavigation | Out-Null
+    $early=Add-AGTAExplorationCommand $lateRoot 2 observe @() @{ok=$true;data=@{elements=@()}}
+    # Explicit timestamp ordering avoids clock resolution flakiness.
+    $earlyPath=(Get-AGTAExplorationPaths $lateRoot).transcript
+    $earlyRecord=Get-Content $earlyPath -Raw | ConvertFrom-Json
+    $earlyRecord.timestamp='2000-01-01T00:00:00Z'
+    $earlyRecord | ConvertTo-Json -Depth 12 -Compress | Set-Content $earlyPath
+    Add-AGTAExplorationCommand $lateRoot 2 click @() @{ok=$true} | Out-Null
+    $later=Add-AGTAExplorationCommand $lateRoot 2 read @() @{ok=$true;data=@{text='Actual fixture content'}}
+    $failure=$null;try {Complete-AGTAExplorationStep $lateRoot 2 'route' 'actual result' $early | Out-Null} catch {$failure=$_.Exception.Message}
+    Check ($failure -match 'precedes' -and $failure -match 'order is unrestricted' -and $failure.Contains($early)) 'Early receipt failure was confused with recording order or omitted the offending ID.'
+    Complete-AGTAExplorationStep $lateRoot 2 'route' 'actual result' $later | Out-Null
+    Check ((Get-AGTAExplorationStatus $lateRoot).covered -eq 1) 'A reviewed later receipt required recording the prior row or replaying GUI work.'
+    $workflow=Get-AGTAExplorationWorkflow $lateRoot -Result @{ok=$false} -Command RecordSteps
+    Check ($workflow.nextAction -match 'without dispatching GUI input' -and $workflow.nextAction -match 'existing row receipts') 'Recording failure recommended replaying the GUI route.'
     Check (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=1}}}).eligible 'Window observation was rejected as evidence.'
     Check (-not (Get-AGTAExplorationVerificationInfo @{command='windows';result=@{ok=$true;data=@{count=0}}}).eligible) 'Empty window observation was accepted as evidence.'
     Check (-not (Get-AGTAExplorationVerificationInfo @{command='type';result=@{ok=$true;data=@{typed=$true;inputFocus=@{source='Win32';native=@{ready=$true}}}}}).eligible) 'Native focus readiness was confused with content verification.'
@@ -80,6 +96,11 @@ try {
         'Set-CimInstance -InputObject $device -Property @{Enabled=$true}'
         'Set-Printer -Name "Example" -DriverName "Other"'
         '$device.SetDefaultPrinter()'
+        'param([string]$InteractionPolicy="AllowShortcuts")'
+        'param([string]$PolicyReason="The application exposes file actions through accelerators")'
+        '$InteractionPolicy = "AllowShortcuts"'
+        'Initialize-AGTAGeneratedTest -InteractionPolicy AllowShortcuts -PolicyReason "required file commands"'
+        'Invoke-StepCommand -Commands $Commands -Command hotkey -Arguments @("-Keys","^o")'
     )) {
         $code | Set-Content $scriptPath
         Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) "GUI bypass survived: $code"
@@ -93,6 +114,10 @@ try {
     Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Read-only image verification was confused with synthetic content generation.'
     'Invoke-StepCommand -Commands $Commands -Command type -Arguments @("-Text", "INSERT INTO Records VALUES (1)")' | Set-Content $scriptPath
     Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Literal SQL text typed through the GUI was confused with a database mutation.'
+    'param([string]$InteractionPolicy="GuiNavigation",[string]$PolicyReason="")' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Safe policy defaults were blocked.'
+    'Invoke-StepCommand -Commands $Commands -Command hotkey -Arguments @("-Keys","^o")' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly -InteractionPolicy AllowShortcuts).ok 'Explicit caller shortcut policy was removed.'
     # The runtime must catch the bypass even if standalone preflight is omitted.
     $runtime=Join-Path $frameworkRoot 'Framework\GeneratedScriptRuntime.ps1'
     $cli=Join-Path (Split-Path $frameworkRoot) 'potato-cli\potato.ps1'
@@ -106,6 +131,16 @@ $app=New-Object -ComObject Example.Application
     $child=& powershell.exe -NoProfile -File $scriptPath -Runtime $runtime -Cli $cli -Csv $csv -Root $root 2>&1
     $ErrorActionPreference='Stop'
     Check ($LASTEXITCODE -ne 0 -and ($child -join "`n") -match 'audit failed before desktop use') 'Runtime did not stop the bypass before COM activation.'
+    @'
+param($Runtime,$Cli,$Csv,$Root,[string]$InteractionPolicy='AllowShortcuts',[string]$PolicyReason='Required file actions use accelerators')
+. $Runtime
+$ctx=Initialize-AGTAGeneratedTest -PotatoCliPath $Cli -TestCaseCsv $Csv -RunRoot $Root -InteractionPolicy $InteractionPolicy -PolicyReason $PolicyReason
+throw 'Fixture runtime failed to stop the self-granted policy'
+'@ | Set-Content $scriptPath
+    $ErrorActionPreference='Continue'
+    $child=& powershell.exe -NoProfile -File $scriptPath -Runtime $runtime -Cli $cli -Csv $csv -Root $root 2>&1
+    $ErrorActionPreference='Stop'
+    Check ($LASTEXITCODE -ne 0 -and ($child -join "`n") -match 'audit failed before desktop use' -and ($child -join "`n") -match 'script default') 'Omitting standalone preflight allowed a script to grant itself shortcut policy.'
     $batchRoot=Join-Path $root 'batch'
     Initialize-AGTAExploration $batchRoot $csv GuiNavigation | Out-Null
     $requests=Join-Path $root 'requests.json'
@@ -120,6 +155,15 @@ $app=New-Object -ComObject Example.Application
     $savedRoot=Join-Path $root 'saved configuration with spaces'
     $begin=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Begin -RunRoot $savedRoot -TestCaseCsv $csv -PotatoCliPath $cli -InteractionPolicy VisibleControls | ConvertFrom-Json
     Check ($begin.ok -and $begin.steps.Count -eq 2) 'Begin did not return the testcase context.'
+    foreach ($policyRequest in @(
+        @{stepIndex=1;command='hotkey';arguments=@('-Keys','^o','-FallbackReason','Required file command','-FallbackEvidence','fixture')},
+        @{stepIndex=1;command='type';arguments=@('-Text','value','-PreDelete','-ClearMethod=Shortcut')},
+        @{stepIndex=1;command='help';arguments=@('-InteractionPolicy','AllowShortcuts')}
+    )) {
+        $json=ConvertTo-Json -InputObject @(@{stepIndex=1;command='help';arguments=@('-Topic','click')},$policyRequest) -Depth 6 -Compress
+        $blocked=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsJson $json | ForEach-Object {$_ | ConvertFrom-Json})
+        Check ($LASTEXITCODE -eq 1 -and $blocked.Count -eq 1 -and -not $blocked[0].ok -and (Get-AGTAExplorationStatus $savedRoot).commandCount -eq 0) 'A later policy violation dispatched the earlier batch command.'
+    }
     Check ($begin.explorationEvidenceRoot -eq (Join-Path $savedRoot 'evidence\exploration') -and [IO.Directory]::Exists($begin.explorationEvidenceRoot)) 'Begin did not return an existing absolute output folder.'
     $requestsContent | ConvertTo-Json -Depth 6 | Set-Content $requests
     $saved=@(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entry -Action Batch -RunRoot $savedRoot -RequestsPath $requests | ForEach-Object {$_ | ConvertFrom-Json})

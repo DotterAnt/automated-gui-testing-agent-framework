@@ -1,6 +1,6 @@
 # Evidence-backed authoring checkpoint. This is an audit trail, not a sandbox.
 function Resolve-AGTACommandArguments {
-    param([string]$Command,[object[]]$Arguments=@())
+    param([string]$Command,[object[]]$Arguments=@(),[string]$InteractionPolicy)
     $values=@(for ($i=0;$i -lt $Arguments.Count;$i++) {
         $value=$Arguments[$i]
         if ($null -eq $value) { throw "Null CLI argument at index $i. No action was dispatched." }
@@ -15,6 +15,18 @@ function Resolve-AGTACommandArguments {
             ConvertTo-Json -InputObject $value -Depth 30 -Compress
         } else { [string]$value }
     })
+    if ($InteractionPolicy) {
+        if (@($values | Where-Object {$_ -match '^--?InteractionPolicy(?:=|$)'}).Count) {throw 'Per-command InteractionPolicy overrides are forbidden. Preserve the declared run policy. No action was dispatched.'}
+        $shortcut=$Command -eq 'hotkey'
+        for ($i=0;$i -lt $values.Count;$i++) {
+            if ($values[$i] -match '^--?ClearMethod(?:=(.*))?$') {
+                $method=if ($Matches[1]) {$Matches[1]} elseif ($i+1 -lt $values.Count) {$values[$i+1]} else {''}
+                if ($method -eq 'Shortcut') {$shortcut=$true}
+            }
+        }
+        if ($shortcut -and $InteractionPolicy -ne 'AllowShortcuts') {throw "InteractionPolicy $InteractionPolicy forbids application shortcuts. Use observed menu/button routes; a fallback reason is not authorization. No action was dispatched."}
+        if ($Command -eq 'press-key' -and $InteractionPolicy -eq 'VisibleControls') {throw 'InteractionPolicy VisibleControls forbids navigation keys. No action was dispatched.'}
+    }
     if ($Command -eq 'observe' -and -not @($values | Where-Object {$_ -match '^--?Format(?:=|$)'}).Count) { $values+=@('-Format','Compact') }
     if ($Command -eq 'start') {
         $modes=@($values | Where-Object {$_ -match '^--?RequireNew(?:Process|Window)(?:=|$)'})
@@ -109,7 +121,11 @@ function Complete-AGTAExplorationStep {
         $v=$verification[0]
         Assert-AGTAExplorationVerification $v
         $actions=@($records | Where-Object { $_.result.ok -and $_.command -in @('start','focus','click','click-coordinate','type','press-key','hotkey','drag','close-window') -and $_.timestamp -le $v.timestamp })
-        if (-not $actions.Count) { throw 'Perform the row through the GUI before recording its observation.' }
+        if (-not $actions.Count) {
+            $laterActions=@($records | Where-Object {$_.result.ok -and $_.command -in @('start','focus','click','click-coordinate','type','press-key','hotkey','drag','close-window')})
+            if ($laterActions.Count) {throw "Verification receipt $id for row $StepIndex precedes that row's successful GUI actions. Remove this early ID and use a later reviewed observation from the same row. Recording order is unrestricted; do not replay performed routes merely to record them in order."}
+            throw "No successful GUI action was recorded for row $StepIndex before verification receipt $id. Perform the missing row and inspect its actual result before recording."
+        }
     }
     $manifest.steps=@($manifest.steps | Where-Object { $_.stepIndex -ne $StepIndex }) + @([pscustomobject]@{
         stepIndex=$StepIndex;route=$Route;observedResult=$ObservedResult;verificationCommandId=$ids[0];verificationCommandIds=$ids;commandIds=@($records.id);recordedAt=(Get-Date).ToString('o')})
@@ -180,6 +196,8 @@ function Get-AGTAExplorationWorkflow {
     $next='Continue the missing CSV rows through the GUI. Review and record each verified row as you finish it; do not generate the script yet.'
     if ($m.completed) {
         $next='Exploration is complete, not the whole task. Generate the script, then execute and repair it until the delivered revision passes every row, required assertion and cleanup.'
+    } elseif ($Command -in @('RecordStep','RecordSteps') -and $Result.ok -eq $false) {
+        $next='Recording failed without dispatching GUI input. Correct the verification IDs using existing row receipts. Each ID must follow a successful action in that row; recording order is unrestricted. Repeat GUI work only when its actual expected result is missing.'
     } elseif ($Result -and -not (Test-AGTAExplorationCommandSucceeded $Result $Command)) {
         $next='Recover the failed command using observed GUI state, then resume this walkthrough. Do not replace unfinished rows with guessed script steps or deliver a partial result.'
     } elseif (-not $missing.Count) {
