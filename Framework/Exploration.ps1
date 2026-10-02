@@ -193,13 +193,14 @@ function Complete-AGTAExploration {
             'Resolve PIDs, handles, checkpoints, foreground selectors and run output paths again in replay; exploration values are not stable identities.',
             'New GUI handoff: checkpoint before opening, then focus SinceCheckpoint to register its new window. Reused window: exact fresh foregroundSelector with WindowSelectorJson; plain focus does not grant cleanup ownership.',
             'First-run/import/already-present state may change during exploration. Probe optional controls without input; branch on actual state before mandatory actions.',
-            'Opaque asynchronous controls: screenshot WaitForChangeFrom with an observed ChangeRegionJson can await changed/settled content without repeated input; preserve tested bounds/origin and assert conditionMet. Do not repeat clicks from immediate stale captures.',
+            'Opaque asynchronous controls: screenshot WaitForImageMatch plus observed MatchRegionJson and clockwise ReferenceRotation awaits expected image pixels. WaitForChangeFrom/ChangeRegionJson only awaits change/stability, which can be a loading screen. Preserve tested waits, bounds/origin and assert conditionMet; never repeat clicks or raise content tolerances after a stale capture.',
             'Every content/layout expectation needs actual replay assertions. Screenshot existence, dimensions and PDF markers do not prove the image or absence of cropping.',
             'Runtime preflights each replay. After a repair, run the script directly; use one targeted read-only check for an unresolved argument/signature error instead of duplicate parse plus preflight calls.');
         steps=@($routes | ForEach-Object {
             $row=$_
             [ordered]@{stepIndex=$row.stepIndex;route=$row.route;observedResult=$row.observedResult;
-                commands=@($row.successfulCommands | Where-Object {$_.command -in @('start','focus','click','click-coordinate','type','press-key','hotkey','drag','close-window','wait-element','wait-file') -or $_.id -in $row.verificationCommandIds} | ForEach-Object {
+                commands=@($row.successfulCommands | Where-Object {$_.command -in @('start','focus','click','click-coordinate','type','press-key','hotkey','drag','close-window','wait-element','wait-file') -or $_.id -in $row.verificationCommandIds -or
+                    ($_.command -eq 'screenshot' -and @($_.arguments | Where-Object {$_ -match '^-(WaitForChangeFrom|WaitForImageMatch)(=|$)'}).Count)} | ForEach-Object {
                     [ordered]@{command=$_.command;arguments=$_.arguments}
                 })}
         })} | ConvertTo-Json -Depth 24 -Compress | Set-Content -LiteralPath $referencePath -Encoding UTF8

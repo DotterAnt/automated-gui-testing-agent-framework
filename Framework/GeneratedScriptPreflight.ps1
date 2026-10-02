@@ -6,7 +6,7 @@ function Get-AGTARuntimeHelp {
     $published = @(
         'Initialize-AGTAGeneratedTest', 'Invoke-RecordedStep', 'Invoke-StepCommand', 'Invoke-StepClick', 'Invoke-AGTATestPlan',
         'Assert-PotatoOk', 'Assert-PotatoFound', 'Assert-FileWait',
-        'Assert-ExpectedResult', 'Assert-TextContains', 'Read-AGTAArtifactBytes', 'Read-AGTAZipText', 'Assert-ZipTextContains', 'Assert-ArtifactPrefix', 'Assert-ImageContainsColors', 'Assert-ImageRegionMatches',
+        'Assert-ExpectedResult', 'Assert-TextContains', 'Read-AGTAArtifactBytes', 'Read-AGTAZipText', 'Assert-ZipTextContains', 'Assert-ArtifactPrefix', 'Assert-ImageContainsColors', 'Assert-ImageRegionMatches', 'Measure-ImageRegionMatch',
         'Invoke-EvidenceScreenshot', 'Add-EvidencePath', 'Register-OpenedProcess',
         'Register-CreatedExternalPath', 'Invoke-TestCleanup',
         'Complete-AGTAGeneratedTest', 'Get-AGTATestExitCode',
@@ -37,7 +37,8 @@ function Get-AGTARuntimeHelp {
                 Assert-ZipTextContains {'Reads actual matching ZIP entries and asserts raw text fragments with ordinal comparison and normalized CR/LF. Optional ExpectedEntryCount asserts cardinality. XML entities are not decoded; use a read-only parser for semantic XML assertions.'}
                 Assert-TextContains {'Result must be a successful CLI read/read-pdf envelope with content provenance. For archive entries use Assert-ZipTextContains; plain strings and {name,text} objects are not CLI results.'}
                 Assert-ImageContainsColors {'Read-only shared decode and compiled pixel scan, bounded by MaxBytes/MaxPixels. ColorRanges objects: name,rMin,rMax,gMin,gMax,bMin,bMax,aMin (RGB defaults 0..255, aMin defaults 1). Each needs MinimumPixels. ExpectedFormat checks actual signature/decoded format, not extension. PassThru returns counts/dimensions. Color presence alone does not prove shape, layout, record count or correct GUI creation.'}
-                Assert-ImageRegionMatches {'Compare actual decoded pixels against the complete existing reference, optionally rotated clockwise by 0/90/180/270. Region is an observed {x,y,width,height} rectangle in Path pixels; omit for the whole output image. Checks aspect ratio and RGB errors on a 128x128 grid plus each of 64 tiles, allowing tested JPEG/render differences. Defaults: mean <=8, worst tile <=24, aspect error <=2%. This is an approximate content comparison, not byte equality or a PDF renderer. For PDF/image expectations render the actual PDF first with a verified available renderer, then compare its observed image region. Never use marker regex/header/dimensions as a replacement. PassThru returns measured errors/provenance.'}
+                Measure-ImageRegionMatch {'Read-only diagnostic metrics for an existing actual image/Region against a complete ReferencePath, optionally rotated clockwise. Returns meanError,maxTileError,aspectError,region,referenceWidth/Height and decoded-pixel provenance. No tolerance, assertion, PASS or GUI action. Use this to diagnose region/orientation on retained screenshots without another replay or relaxed assertion thresholds; keep Assert-ImageRegionMatches in replay.'}
+                Assert-ImageRegionMatches {'Compare actual decoded pixels against the complete existing reference, optionally rotated clockwise by 0/90/180/270. Region is an observed {x,y,width,height} rectangle in Path pixels; omit for the whole output image. Checks aspect ratio and RGB errors on a 128x128 grid plus each of 64 tiles, allowing tested JPEG/render differences. Defaults: mean <=8, worst tile <=24, aspect error <=2%; hard limits: mean 32, tile 64. Fix capture region/orientation/readiness instead of increasing tolerances after failures. For live opaque content, screenshot WaitForImageMatch/MatchRegionJson awaits expected pixels; change/stability alone may be a loading frame. This is an approximate content comparison, not byte equality or a PDF renderer. Render an actual PDF first with an available read-only renderer, then compare its observed image region. Never use marker regex/header/dimensions as a replacement. PassThru returns measured errors/provenance.'}
                 Invoke-StepCommand {'*Json option values may be strings or objects; objects are serialized before CLI invocation.'}
                 Add-EvidencePath {'Pass the current row reference: -Evidence $Evidence -Path <saved evidence>. Merely saving/adding a screenshot does not assert its contents.'}
                 Assert-ExpectedResult {'Condition must be a Boolean measured from actual state/content. Literal $true is rejected by preflight. Dispatch, filenames, image dimensions or a PDF header alone do not prove all content expectations.'}
@@ -64,6 +65,34 @@ function Test-AGTAGeneratedScript {
     $parseErrors = $null
     $ast = [Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$parseErrors)
     foreach ($error in @($parseErrors)) { $issues += "Line $($error.Extent.StartLineNumber): $($error.Message)" }
+    # Derive the context contract from its initializer, without invoking it or
+    # supplied code. Catch typos in late rendering/assertion helpers before a
+    # full GUI replay. Only apply this to scripts using the framework context.
+    $contextAssignment=$ast.Find({param($node)
+        $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and $node.Left.VariablePath.UserPath -eq 'Context' -and
+        $node.Right.Find({param($call) $call -is [Management.Automation.Language.CommandAst] -and
+            $call.GetCommandName() -in @('Initialize-AGTAGeneratedTest','Get-AGTAGeneratedTestContext')},$true)
+    },$true)
+    if ($contextAssignment) {
+        $initializer=(Get-Command Initialize-AGTAGeneratedTest -CommandType Function).ScriptBlock.Ast
+        $schemaAssignment=$initializer.Find({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left.Extent.Text -eq '$script:AGTAGeneratedTestContext'},$true)
+        $schema=$schemaAssignment.Right.Find({param($node) $node -is [Management.Automation.Language.HashtableAst]},$true)
+        $contextProperties=@($schema.KeyValuePairs | ForEach-Object {$_.Item1.Value})+@('PSObject')
+        # Explicit custom properties are allowed; this is typo detection, not
+        # a prohibition on extending the context.
+        $members=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.MemberExpressionAst] -and
+            $node -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -and
+            $node.Expression -is [Management.Automation.Language.VariableExpressionAst] -and $node.Expression.VariablePath.UserPath -eq 'Context' -and
+            $node.Member -is [Management.Automation.Language.StringConstantExpressionAst]},$true))
+        $declared=@($members | Where-Object {$_.Parent -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Parent.Left -eq $_} | ForEach-Object {$_.Member.Value})
+        foreach ($member in $members) {
+            if ($member.Member.Value -notin $contextProperties -and $member.Member.Value -notin $declared) {
+                $issues+="Line $($member.Extent.StartLineNumber): unknown framework Context property '$($member.Member.Value)'. Use ExecutionEvidenceRoot for this replay's screenshots/rendered artifacts. Context properties: $($contextProperties -join ', ')."
+            }
+        }
+    }
     foreach ($parameter in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.ParameterAst]}, $true))) {
         $default=$parameter.DefaultValue
         if ($default -isnot [Management.Automation.Language.StringConstantExpressionAst] -and $default -isnot [Management.Automation.Language.ExpandableStringExpressionAst]) {continue}
@@ -95,6 +124,7 @@ function Test-AGTAGeneratedScript {
         $issues += @($exploration.issues)
     }
     $localFunctions = @{}
+    $commandMetadata = @{}
     $screenshotPaths=@{}
     foreach ($assignment in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst]}, $true))) {
         if ($assignment.Left -is [Management.Automation.Language.VariableExpressionAst] -and
@@ -115,6 +145,24 @@ function Test-AGTAGeneratedScript {
         $localFunctions[$definition.Name] = $true
     }
     foreach ($shotCall in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Invoke-StepCommand'},$true))) {
+        foreach ($argumentArray in @($shotCall.FindAll({param($node) $node -is [Management.Automation.Language.ArrayLiteralAst]},$true))) {
+            $argumentParts=@($argumentArray.Elements);$literalOptions=@{};$guarded=$false
+            for ($i=0;$i -lt $argumentParts.Count;$i++) {
+                if ($argumentParts[$i] -isnot [Management.Automation.Language.StringConstantExpressionAst]) {continue}
+                $option=[string]$argumentParts[$i].Value
+                if ($option -match '^-(?<name>[^=]+)(?:=(?<value>.*))?$') {
+                    $optionName=$Matches.name;$literalOptions[$optionName]=$true
+                    if ($optionName -eq 'Scope' -and $Matches.value -eq 'ForegroundWindow') {$guarded=$true}
+                }
+                if ($option -eq '-Scope' -and $i+1 -lt $argumentParts.Count -and
+                    $argumentParts[$i+1] -is [Management.Automation.Language.StringConstantExpressionAst] -and $argumentParts[$i+1].Value -eq 'ForegroundWindow') {$guarded=$true}
+            }
+            if ($guarded) {
+                foreach ($required in @('WindowSelectorJson','FallbackReason','FallbackEvidence')) {
+                    if (-not $literalOptions.ContainsKey($required)) {$issues+="Line $($argumentArray.Extent.StartLineNumber): guarded ForegroundWindow requires -$required. Preserve the tested window identity and fallback evidence before replay."}
+                }
+            }
+        }
         $shotParts=@($shotCall.CommandElements);$isScreenshot=$false
         for ($i=1;$i -lt $shotParts.Count;$i++) {
             if ($shotParts[$i] -isnot [Management.Automation.Language.CommandParameterAst] -or $shotParts[$i].ParameterName -ne 'Command') {continue}
@@ -219,7 +267,10 @@ function Test-AGTAGeneratedScript {
         }
         if (-not $name -or $localFunctions.ContainsKey($name)) { continue }
         if (-not $PolicyOnly) {$checked++}
-        $command = Get-Command -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
+        # Resolve each distinct command once per audit. Repeated calls need the
+        # same metadata; repeated module discovery adds no validation coverage.
+        if (-not $commandMetadata.ContainsKey($name)) {$commandMetadata[$name]=Get-Command -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1}
+        $command=$commandMetadata[$name]
         if (-not $command) {
             if (-not $PolicyOnly) {$issues += "Line $($call.Extent.StartLineNumber): command '$name' is unavailable. Dot-source its helper file or correct the name."}
             continue
@@ -248,6 +299,14 @@ function Test-AGTAGeneratedScript {
                 foreach ($attribute in $metadata.Attributes) {
                     if ($attribute -is [Management.Automation.ValidateSetAttribute] -and [string]$value.Value -notin $attribute.ValidValues) {
                         $issues+="Line $($value.Extent.StartLineNumber): '$name -$($parameter.ParameterName)' requires one of: $($attribute.ValidValues -join ', ')."
+                    }
+                    if ($attribute -is [Management.Automation.ValidateRangeAttribute] -and $attribute.MinRange -is [ValueType] -and $attribute.MaxRange -is [ValueType]) {
+                        $number=0.0
+                        $numeric=[double]::TryParse([string]$value.Value,[Globalization.NumberStyles]::Float,[Globalization.CultureInfo]::InvariantCulture,[ref]$number)
+                        if (-not $numeric -or [double]::IsNaN($number) -or $number -lt [double]$attribute.MinRange -or $number -gt [double]$attribute.MaxRange) {
+                            $detail=if ($name -eq 'Assert-ImageRegionMatches') {' Fix the observed region, orientation or readiness; never raise tolerances to turn a failed content assertion into PASS.'} else {' Correct the literal argument before replaying the GUI.'}
+                            $issues+="Line $($value.Extent.StartLineNumber): '$name -$($parameter.ParameterName)' requires $($attribute.MinRange)..$($attribute.MaxRange).$detail"
+                        }
                     }
                 }
             }

@@ -213,7 +213,7 @@ function New-CommandSummary {
     )
 
     $context = Get-AGTAGeneratedTestContext
-    [pscustomobject][ordered]@{
+    $summary=[ordered]@{
         index = $script:AGTACommandIndex
         command = $Command
         arguments = @($Arguments)
@@ -227,6 +227,8 @@ function New-CommandSummary {
         errorType = $(if ($Result.error) { $Result.error.type } else { $null })
         inputFocus = $(if ($Result.error.focus) { $Result.error.focus } elseif ($Result.data.inputFocus) { $Result.data.inputFocus } else { $null })
     }
+    if ($Result.data.visualWait) {$summary.visualWait=$Result.data.visualWait;$summary.evidencePath=$Result.data.path}
+    [pscustomobject]$summary
 }
 
 function Invoke-StepCommand {
@@ -273,6 +275,10 @@ function Assert-PotatoOk {
     )
 
     if ($Result.data.visualWait -and -not $Result.data.visualWait.conditionMet) {
+        if ($Result.data.visualWait.mode -eq 'ExpectedImage') {
+            $wait=$Result.data.visualWait
+            throw "$Message Expected image did not match before the deadline. Mean RGB error $($wait.meanError), worst tile $($wait.maxTileError), aspect error $($wait.aspectError). Inspect the retained screenshot/region/orientation; do not repeat input or weaken tolerances."
+        }
         throw "$Message Visual transition did not occur/settle; inspect the retained screenshot before further input."
     }
     if (-not [bool]$Result.ok -or ($Result.data.verificationPerformed -and $Result.data.verified -eq $false)) {

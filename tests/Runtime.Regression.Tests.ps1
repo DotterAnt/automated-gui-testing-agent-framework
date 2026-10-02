@@ -78,6 +78,11 @@ try {
     $visualWaitRejected=$false
     try {Assert-PotatoOk @{ok=$true;data=@{visualWait=@{conditionMet=$false}}}} catch {$visualWaitRejected=$_.Exception.Message -match 'Visual transition'}
     Check $visualWaitRejected 'An unmet visual screenshot wait survived replay assertion.'
+    $imageWait=@{ok=$true;data=@{path='retained.png';visualWait=@{mode='ExpectedImage';conditionMet=$false;meanError=100;maxTileError=150;aspectError=0}}}
+    $mismatch=$null;try {Assert-PotatoOk $imageWait} catch {$mismatch=$_.Exception.Message}
+    Check ($mismatch -match 'Expected image' -and $mismatch -match '100' -and $mismatch -match 'region/orientation') 'Expected-content wait lost its actionable diagnosis.'
+    $imageSummary=New-CommandSummary screenshot @() $imageWait
+    Check ($imageSummary.visualWait.meanError -eq 100 -and $imageSummary.evidencePath -eq 'retained.png') 'Compact failure summary dropped content metrics/evidence and forced another full log read.'
     Assert-PotatoOk @{ok=$true;data=@{visualWait=@{conditionMet=$true}}}
     $fileWaitFailed=$false
     try { Assert-FileWait -Result ([pscustomobject]@{ok=$true;data=@{path=$csv;conditionMet=$false}}) -Message 'Fixture wait failed.' } catch { $fileWaitFailed=$_.Exception.Message -eq 'Fixture wait failed.' }

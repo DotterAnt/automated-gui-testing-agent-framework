@@ -1,17 +1,12 @@
-function Assert-ImageRegionMatches {
+function Measure-ImageRegionMatch {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string]$Path,
         [Parameter(Mandatory)] [string]$ReferencePath,
         [object]$Region,
         [ValidateSet(0,90,180,270)] [int]$ReferenceRotation=0,
-        [ValidateRange(0,255)] [double]$MaxMeanError=8,
-        [ValidateRange(0,255)] [double]$MaxTileError=24,
-        [ValidateRange(0,0.1)] [double]$AspectTolerance=0.02,
         [ValidateRange(1,16777216)] [int]$MaxPixels=16777216,
         [ValidateRange(1,67108864)] [int]$MaxBytes=16777216,
-        [ValidateRange(0,60000)] [int]$TimeoutMs=2000,
-        [string]$Message='Actual image region must preserve the reference content and orientation.',
-        [switch]$PassThru)
+        [ValidateRange(0,60000)] [int]$TimeoutMs=2000)
     Add-Type -AssemblyName System.Drawing
     if (-not ('AGTAImagePixels' -as [type])) {Add-Type -Path (Join-Path $PSScriptRoot 'ImagePixels.cs')}
     $resources=New-Object 'Collections.Generic.List[IDisposable]'
@@ -66,12 +61,31 @@ function Assert-ImageRegionMatches {
         $comparison=[AGTAImagePixels]::Compare($locks[0].Scan0,$locks[0].Stride,$locks[1].Scan0,$locks[1].Stride,128)
         $info=[pscustomobject]@{path=$Path;referencePath=$ReferencePath;referenceRotation=$ReferenceRotation;
             region=@{x=$rectangle.X;y=$rectangle.Y;width=$rectangle.Width;height=$rectangle.Height};
+            referenceWidth=$images[1].Width;referenceHeight=$images[1].Height;
             aspectError=$aspectError;meanError=$comparison.meanError;maxTileError=$comparison.maxTileError;contentSource='DecodedImagePixels'}
-    } catch {Assert-ExpectedResult -Condition $false -Message "$Message $($_.Exception.Message)";return}
-    finally {
+    } finally {
         for ($i=0;$i -lt $locks.Count;$i++) {$bitmaps[$i].UnlockBits($locks[$i])}
         for ($i=$resources.Count-1;$i -ge 0;$i--) {$resources[$i].Dispose()}
     }
+    return $info
+}
+
+function Assert-ImageRegionMatches {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string]$ReferencePath,
+        [object]$Region,
+        [ValidateSet(0,90,180,270)] [int]$ReferenceRotation=0,
+        [ValidateRange(0,32)] [double]$MaxMeanError=8,
+        [ValidateRange(0,64)] [double]$MaxTileError=24,
+        [ValidateRange(0,0.1)] [double]$AspectTolerance=0.02,
+        [ValidateRange(1,16777216)] [int]$MaxPixels=16777216,
+        [ValidateRange(1,67108864)] [int]$MaxBytes=16777216,
+        [ValidateRange(0,60000)] [int]$TimeoutMs=2000,
+        [string]$Message='Actual image region must preserve the reference content and orientation.',
+        [switch]$PassThru)
+    try {$info=Measure-ImageRegionMatch -Path $Path -ReferencePath $ReferencePath -Region $Region -ReferenceRotation $ReferenceRotation -MaxPixels $MaxPixels -MaxBytes $MaxBytes -TimeoutMs $TimeoutMs}
+    catch {Assert-ExpectedResult -Condition $false -Message "$Message $($_.Exception.Message)";return}
     Assert-ExpectedResult -Condition ($info.aspectError -le $AspectTolerance -and $info.meanError -le $MaxMeanError -and $info.maxTileError -le $MaxTileError) -Message (
         "$Message Aspect error $($info.aspectError) (limit $AspectTolerance), mean RGB error $($info.meanError) (limit $MaxMeanError), worst tile $($info.maxTileError) (limit $MaxTileError).")
     if ($PassThru) {return $info}

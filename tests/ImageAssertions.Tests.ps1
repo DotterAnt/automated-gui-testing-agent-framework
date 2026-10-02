@@ -50,7 +50,12 @@ try {
     Check ($info.meanError -eq 0 -and (Get-FileHash $reference).Hash -eq $hash) 'Observed screenshot region changed content or modified the source.'
     Reject {Assert-ImageRegionMatches $reference -ReferencePath $reference -ReferenceRotation 90} 'A no-op passed requested rotation.'
     Reject {Assert-ImageRegionMatches $rotated -ReferencePath $reference -ReferenceRotation 270} 'Wrong rotation direction passed the same dimensions.'
+    $metrics=Measure-ImageRegionMatch $rotated -ReferencePath $reference -ReferenceRotation 270
+    Check ($metrics.meanError -gt 8 -and $metrics.referenceWidth -eq 48 -and $metrics.referenceHeight -eq 80 -and $metrics.contentSource -eq 'DecodedImagePixels') 'Read-only diagnosis required relaxed assertions or lost complete reference dimensions.'
+    $help=Get-AGTARuntimeHelp Measure-ImageRegionMatch
+    Check ($help.available -and $help.note -match 'No tolerance, assertion, PASS') 'Read-only image diagnostics were not available without fabricating PASS.'
     Reject {Assert-ImageRegionMatches $crop -ReferencePath $reference -ReferenceRotation 90} 'Cropped/stretched content passed matching dimensions.'
+    Reject {Assert-ImageRegionMatches $rotated -ReferencePath $reference -ReferenceRotation 270 -MaxMeanError 135 -MaxTileError 180} 'Extreme tolerances allowed a wrong orientation to pass.'
     Reject {Assert-ImageRegionMatches $screen -ReferencePath $reference -ReferenceRotation 90 -Region @{x=80;y=10;width=48;height=80}} 'Out-of-bounds screenshot region was accepted.'
     Reject {Assert-ImageRegionMatches $screen -ReferencePath $reference -Region @{x=0;y=0;width=0;height=10}} 'Empty comparison region passed.'
     Reject {Assert-ImageRegionMatches $rotated -ReferencePath $reference -ReferenceRotation 90 -MaxPixels 3000} 'Image comparison ignored its decoded pixel bound.'

@@ -148,12 +148,16 @@ try {
         )}
         Check ($response.result.isError -and @(Values $response).Count -eq 1 -and -not (Values $response)[0].data.conditionMet -and -not (Values $response)[0].verification.eligible -and (Test-Path $waitedImage)) 'MCP continued after an unmet visual wait or lost its final frame.'
         Tool @{action='Status';runRoot=$guiRun} | Out-Null
+        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='screenshot';arguments=@('-OutFile',(Join-Path $root 'expected-match.png'),'-X','0','-Y','0','-Width','100','-Height','100','-WaitForImageMatch',$imagePath,'-MatchRegionJson',@{x=0;y=0;width=100;height=100},'-TimeoutMs','1000','-StableMs','0')})}
+        Check (-not $response.result.isError -and (Values $response)[0].data.conditionMet -and (Values $response)[0].data.visualWait.mode -eq 'ExpectedImage' -and @($response.result.content | Where-Object {$_.type -eq 'image'}).Count -eq 1) 'MCP lost expected-image wait options, object region or retained pixels.'
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='windows';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title,'-WaitForNotExists','-TimeoutMs','0')})}
         Check ($response.result.isError -and -not (Values $response)[0].data.conditionMet -and -not (Values $response)[0].verification.eligible) 'A real open window passed MCP disappearance evidence.'
         Tool @{action='Status';runRoot=$guiRun} | Out-Null
         $scope=@('-Scope','ForegroundWindow','-WindowSelectorJson',$ready.data.foregroundSelector,'-FallbackReason','Actual generic MCP fixture','-FallbackEvidence',$ready.explorationCommandId)
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='observe';arguments=$scope+@('-Depth','0','-MaxElements','1')})}
         Check (-not $response.result.isError -and (Values $response)[0].data.focusedElement.id -eq 'Filename') 'MCP focus-only observation lost the actual field.'
+        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='screenshot';arguments=$scope+@('-OutFile',(Join-Path $root 'guarded-window.png'))})}
+        Check (-not $response.result.isError -and (Values $response)[0].data.region.width -gt 100 -and @($response.result.content | Where-Object {$_.type -eq 'image'}).Count -eq 1) 'MCP rejected/ignored guarded foreground screenshot or lost its inline pixels.'
         $path=Join-Path $root ($unicode+'.docx')
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='type';arguments=$scope+@('-AutomationId','Filename','-Text',$path,'-PathKind','SaveFile','-PreDelete','-Verify','-TimeoutMs','1000')})}
         $typed=(Values $response)[0]

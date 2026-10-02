@@ -55,6 +55,7 @@ try {
         Add-AGTAExplorationCommand $root $i click @('-Name','Fixture') @{ok=$true;interactionPolicy=@{mode='GuiNavigation'}} | Out-Null
         $miss=Add-AGTAExplorationCommand $root $i wait-element @() @{ok=$true;data=@{exists=$false}}
         Reject { Complete-AGTAExplorationStep $root $i 'Performed route' 'Not there' $miss } 'Successful dispatch of a failed wait passed.'
+        if ($i -eq 1) {Add-AGTAExplorationCommand $root $i screenshot @('-WaitForImageMatch','existing-reference.png','-MatchRegionJson','{}') @{ok=$true;data=@{visualWait=@{mode='ExpectedImage';conditionMet=$true}}} | Out-Null}
         $id=Add-AGTAExplorationCommand $root $i read @('-Name','Fixture') @{ok=$true;data=@{text='Observed fixture'}}
         Complete-AGTAExplorationStep $root $i 'Performed visible route' 'Observed fixture' $id | Out-Null
         if ($i -eq 1) { Reject { Complete-AGTAExploration $root $csv GuiNavigation } 'Partial coverage passed.' }
@@ -71,7 +72,9 @@ try {
     Check (-not (Test-AGTAExploration $completed.explorationPath $csv GuiNavigation).ok) 'Execution gate accepted unverified typing receipt.'
     $savedManifest | Set-Content $completed.explorationPath
     $routes=Get-Content -LiteralPath $completed.routesPath -Raw | ConvertFrom-Json
-    Check ($routes.steps.Count -eq 2 -and $routes.steps[0].successfulCommands.Count -eq 5 -and $routes.steps[0].failedCommandIds.Count -eq 1) 'Route reference lost row coverage or included an unmet wait as successful.'
+    Check ($routes.steps.Count -eq 2 -and $routes.steps[0].successfulCommands.Count -eq 6 -and $routes.steps[0].failedCommandIds.Count -eq 1) 'Route reference lost row coverage or included an unmet wait as successful.'
+    $replayReference=Get-Content -LiteralPath $completed.replayReferencePath -Raw | ConvertFrom-Json
+    Check (@($replayReference.steps[0].commands | Where-Object {$_.command -eq 'screenshot' -and $_.arguments -contains '-WaitForImageMatch'}).Count -eq 1) 'Compact replay reference discarded a tested readiness wait that was not a verification receipt.'
     Check (-not (Test-AGTAExploration $completed.explorationPath $csv VisibleControls).ok) 'Policy mismatch passed.'
     Reject { Add-AGTAExplorationCommand $root 1 click @() @{ok=$true} } 'Completed transcript was silently extended.'
     $scriptPath=Join-Path $root 'fixture.ps1'
@@ -153,6 +156,25 @@ try {
     Check ($audit.ok -eq ($PSVersionTable.PSVersion.Major -ge 6)) 'Literal shell-specific encoding did not match the active host compatibility.'
     'Assert-ImageRegionMatches -Path $image -ReferencePath $source -ReferenceRotation 45' | Set-Content $scriptPath
     Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) 'Unsupported literal helper rotation survived preflight.'
+    'Assert-ImageRegionMatches -Path $image -ReferencePath $source -MaxMeanError 135 -MaxTileError 180' | Set-Content $scriptPath
+    $audit=Test-AGTAGeneratedScript $scriptPath -PolicyOnly
+    Check (-not $audit.ok -and $audit.issues.Count -ge 2 -and ($audit.issues -join ' ') -match 'readiness') 'Content tolerances masking blank/wrong captures survived preflight.'
+    '$Context=Initialize-AGTAGeneratedTest; function Render-ActualOutput {param($Context) Join-Path $Context.ExecutionArtifactRoot "render.png"}; Render-ActualOutput $Context' | Set-Content $scriptPath
+    $audit=Test-AGTAGeneratedScript $scriptPath -PolicyOnly
+    Check (-not $audit.ok -and ($audit.issues -join ' ') -match 'unknown framework Context property' -and ($audit.issues -join ' ') -match 'ExecutionEvidenceRoot') 'Late helper context typo survived preflight.'
+    '$Context=Initialize-AGTAGeneratedTest; Join-Path $Context.ExecutionEvidenceRoot "render.png"; $Context.Timing.commandCount' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Real context properties were rejected.'
+    '$Context=[pscustomobject]@{Custom=1}; $Context.Custom' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Unrelated local context was mistaken for the runtime contract.'
+    'Invoke-StepCommand -Commands $Commands -Command wait-element -Arguments @("-Scope","ForegroundWindow","-WindowSelectorJson",$guard,"-Name","Ready")' | Set-Content $scriptPath
+    $audit=Test-AGTAGeneratedScript $scriptPath -PolicyOnly
+    Check (-not $audit.ok -and ($audit.issues -join ' ') -match 'FallbackReason' -and ($audit.issues -join ' ') -match 'FallbackEvidence') 'Missing foreground guard metadata survived preflight.'
+    'Invoke-StepCommand -Commands $Commands -Command wait-element -Arguments @("-Scope","ForegroundWindow","-WindowSelectorJson",$guard,"-FallbackReason",$reason,"-FallbackEvidence",$evidence,"-Name","Ready")' | Set-Content $scriptPath
+    Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Complete dynamic foreground guard was rejected.'
+    'Invoke-StepCommand -Commands $Commands -Command screenshot -Arguments @("-Scope=ForegroundWindow","-WindowSelectorJson",$guard)' | Set-Content $scriptPath
+    Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) 'Inline scope syntax bypassed missing guard metadata preflight.'
+    'Assert-ImageRegionMatches -Path $image -ReferencePath $source -MaxMeanError "135"' | Set-Content $scriptPath
+    Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) 'Quoted numeric tolerance bypassed literal range validation.'
     'Get-Content -LiteralPath $artifact -Encoding UTF8' | Set-Content $scriptPath
     Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Supported literal encoding was rejected.'
     'Assert-ExpectedResult -Condition ($text -eq "Test") -Message "Persisted text"' | Set-Content $scriptPath
