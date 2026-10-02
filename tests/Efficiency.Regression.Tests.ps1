@@ -86,6 +86,10 @@ try {
     $compact=ConvertTo-AGTACompactTestResult $full
     Check ($compact.summary.passed -eq 1 -and $compact.steps[1].failedCommands[0].error -eq 'ScopeNotReady' -and $compact.steps[1].evidence[0] -eq 'failure.png' -and $compact.artifacts.resultPath -eq 'full.json') 'Compact output lost actionable failure or evidence paths.'
     Check ($compact.steps[0].failedCommands.Count -eq 0 -and -not $compact.steps[0].Contains('commands')) 'Compact output repeated successful command transcripts.'
+    Check ($compact.steps[1].evidence -is [array] -and $compact.steps[0].evidence -is [array]) 'Compact evidence paths must stay arrays for zero or one item.'
+    $full.steps[1].status='DIAGNOSTIC_FAIL'
+    $compact=ConvertTo-AGTACompactTestResult $full
+    Check ($compact.steps[1].evidence[0] -eq 'failure.png') 'Diagnostic failure lost its screenshot path.'
     $help=Get-AGTARuntimeHelp Read-AGTAZipText
     Check ($help.available -and $help.syntax -match 'EntryPattern') 'Generic ZIP reader is missing from targeted help.'
     $help=Get-AGTARuntimeHelp Assert-ZipTextContains

@@ -10,10 +10,10 @@ function Get-AGTARuntimeHelp {
         'Invoke-EvidenceScreenshot', 'Add-EvidencePath', 'Register-OpenedProcess',
         'Register-CreatedExternalPath', 'Invoke-TestCleanup',
         'Complete-AGTAGeneratedTest', 'Get-AGTATestExitCode',
-        'Test-AGTAGeneratedScript', 'Assert-AGTAGeneratedScriptPreflight'
+        'Test-AGTAGeneratedScript', 'Assert-AGTAGeneratedScriptPreflight', 'Get-AGTARuntimeHelp'
     )
     if ($Name -and $Name -notin $published) {
-        throw "Unknown generated-runtime helper '$Name'. Call Get-AGTARuntimeHelp without -Name to list helpers."
+        throw "Unknown generated-runtime helper '$Name'. Available helpers: $($published -join ', ')."
     }
     $names = if ($Name) { @($Name) } else { $published }
     foreach ($helper in $names) {
@@ -56,7 +56,8 @@ function Test-AGTAGeneratedScript {
           [string] $PotatoCliPath,
           [string] $ExplorationPath,
           [string] $InteractionPolicy = 'GuiNavigation',
-          [switch] $PolicyOnly)
+          [switch] $PolicyOnly,
+          [switch] $AllowIncompleteExploration)
     $issues = @()
     if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
         return [pscustomobject]@{ok=$false;issues=@("Script not found: $ScriptPath");checkedCommands=0}
@@ -120,7 +121,7 @@ function Test-AGTAGeneratedScript {
         }
     }
     if ($TestCaseCsv -and (Split-Path -Leaf $ScriptPath) -ne 'GeneratedScript.Template.ps1') {
-        $exploration=Test-AGTAExploration -Path $ExplorationPath -TestCaseCsv $TestCaseCsv -InteractionPolicy $InteractionPolicy
+        $exploration=Test-AGTAExploration -Path $ExplorationPath -TestCaseCsv $TestCaseCsv -InteractionPolicy $InteractionPolicy -AllowIncomplete:$AllowIncompleteExploration
         $issues += @($exploration.issues)
     }
     $localFunctions = @{}
@@ -152,6 +153,14 @@ function Test-AGTAGeneratedScript {
                 $option=[string]$argumentParts[$i].Value
                 if ($option -match '^-(?<name>[^=]+)(?:=(?<value>.*))?$') {
                     $optionName=$Matches.name;$literalOptions[$optionName]=$true
+                    if ($optionName -eq 'Regex') {
+                        if ($Matches.value -match '^(false|0)$') {$literalOptions.Regex=$false}
+                        if ($option -eq '-Regex' -and $i+1 -lt $argumentParts.Count) {
+                            $nextArgument=$argumentParts[$i+1]
+                            if (($nextArgument -is [Management.Automation.Language.VariableExpressionAst] -and $nextArgument.VariablePath.UserPath -eq 'false') -or
+                                ($nextArgument -is [Management.Automation.Language.StringConstantExpressionAst] -and $nextArgument.Value -match '^(false|0)$')) {$literalOptions.Regex=$false}
+                        }
+                    }
                     if ($optionName -eq 'Scope' -and $Matches.value -eq 'ForegroundWindow') {$guarded=$true}
                 }
                 if ($option -eq '-Scope' -and $i+1 -lt $argumentParts.Count -and
@@ -160,6 +169,14 @@ function Test-AGTAGeneratedScript {
             if ($guarded) {
                 foreach ($required in @('WindowSelectorJson','FallbackReason','FallbackEvidence')) {
                     if (-not $literalOptions.ContainsKey($required)) {$issues+="Line $($argumentArray.Extent.StartLineNumber): guarded ForegroundWindow requires -$required. Preserve the tested window identity and fallback evidence before replay."}
+                }
+            }
+            if ($literalOptions.Regex) {
+                for ($i=0;$i+1 -lt $argumentParts.Count;$i++) {
+                    if ($argumentParts[$i] -is [Management.Automation.Language.StringConstantExpressionAst] -and $argumentParts[$i].Value -in @('-Name','-AutomationId','-ClassName','-WindowTitle') -and
+                        $argumentParts[$i+1] -is [Management.Automation.Language.StringConstantExpressionAst]) {
+                        try {[void][regex]::new($argumentParts[$i+1].Value)} catch {$issues+="Line $($argumentArray.Extent.StartLineNumber): invalid literal Regex '$($argumentParts[$i+1].Value)'. Omit Regex for wildcard selectors; no GUI retry is needed to diagnose syntax."}
+                    }
                 }
             }
         }
@@ -365,7 +382,7 @@ function Assert-AGTAGeneratedScriptPreflight {
           [string] $PotatoCliPath,
           [string] $ExplorationPath,
           [string] $InteractionPolicy = 'GuiNavigation')
-    $result = Test-AGTAGeneratedScript -ScriptPath $ScriptPath -TestCaseCsv $TestCaseCsv -PotatoCliPath $PotatoCliPath -ExplorationPath $ExplorationPath -InteractionPolicy $InteractionPolicy
+    $result = Test-AGTAGeneratedScript -ScriptPath $ScriptPath -TestCaseCsv $TestCaseCsv -PotatoCliPath $PotatoCliPath -ExplorationPath $ExplorationPath -InteractionPolicy $InteractionPolicy -AllowIncompleteExploration:($script:AGTAPlanSessionKind -eq 'Diagnostic')
     if (-not $result.ok) { throw ('Generated script preflight failed: ' + ($result.issues -join '; ')) }
     return $result
 }

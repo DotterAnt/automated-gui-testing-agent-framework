@@ -322,6 +322,14 @@ throw 'Fixture runtime failed to stop the self-granted policy'
         $assessment=Test-AGTAGeneratedScript -ScriptPath $wrapperFile -PolicyOnly
         Check (-not $assessment.ok -and ($assessment.issues -join ' ') -match 'shell/protocol launcher') 'Observed launcher workaround passed static audit.'
     }
+    $regexPath=Join-Path $root 'regex.ps1'
+    'Invoke-StepCommand -Commands $Commands -Command click -Arguments @(''-Name'',''*fixture*'',''-Regex'')' | Set-Content $regexPath
+    $regexAudit=Test-AGTAGeneratedScript $regexPath -PolicyOnly
+    Check (-not $regexAudit.ok -and ($regexAudit.issues -join ' ') -match 'invalid literal Regex') 'Invalid wildcard-as-regex reached the desktop.'
+    'Invoke-StepCommand -Commands $Commands -Command click -Arguments @(''-Name'',''fixture.*'',''-Regex'')' | Set-Content $regexPath
+    Check (Test-AGTAGeneratedScript $regexPath -PolicyOnly).ok 'Valid regular expression was rejected.'
+    'Invoke-StepCommand -Commands $Commands -Command click -Arguments @(''-Name'',''*fixture*'',''-Regex'',$false)' | Set-Content $regexPath
+    Check (Test-AGTAGeneratedScript $regexPath -PolicyOnly).ok 'Explicit false Regex flag rejected a valid wildcard.'
     "Authoring checks: $script:checks passed"
 } finally {
     . (Join-Path $frameworkRoot 'Framework\ExplorationHost.ps1')

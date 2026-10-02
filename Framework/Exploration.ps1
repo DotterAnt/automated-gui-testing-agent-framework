@@ -66,7 +66,7 @@ function Get-AGTAExplorationPaths {
 }
 
 function Initialize-AGTAExploration {
-    param([string]$RunRoot, [string]$TestCaseCsv, [string]$InteractionPolicy='GuiNavigation', [string]$PotatoCliPath)
+    param([string]$RunRoot, [string]$TestCaseCsv, [string]$InteractionPolicy='GuiNavigation', [string]$PotatoCliPath, [string]$PolicyReason)
     $RunRoot=$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RunRoot)
     $paths=Get-AGTAExplorationPaths $RunRoot
     if (Test-Path -LiteralPath $paths.manifest) { throw 'Exploration already exists. Resume it or use a new run folder; do not overwrite evidence.' }
@@ -76,7 +76,7 @@ function Initialize-AGTAExploration {
     # Prepare infrastructure only. The application must create all testcase outputs through its GUI.
     [void][IO.Directory]::CreateDirectory($paths.evidenceRoot)
     $value=[ordered]@{schemaVersion=1;testCasePath=(Get-Item -LiteralPath $TestCaseCsv).FullName;potatoCliPath=$PotatoCliPath;testCaseHash=(Get-FileHash -LiteralPath $TestCaseCsv -Algorithm SHA256).Hash;
-        interactionPolicy=$InteractionPolicy;startedAt=(Get-Date).ToString('o');completedAt=$null;completed=$false;
+        interactionPolicy=$InteractionPolicy;policyReason=$PolicyReason;startedAt=(Get-Date).ToString('o');completedAt=$null;completed=$false;
         stepCount=$rows.Count;steps=@();transcriptPath=$paths.transcript;transcriptHash=$null;explorationEvidenceRoot=$paths.evidenceRoot}
     $value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $paths.manifest -Encoding UTF8
     $value
@@ -222,15 +222,15 @@ function Get-AGTAExplorationWorkflow {
     $paths=Get-AGTAExplorationPaths $RunRoot
     $m=Get-Content -LiteralPath $paths.manifest -Raw | ConvertFrom-Json
     $missing=@(1..$m.stepCount | Where-Object {$_ -notin @($m.steps.stepIndex)})
-    $next='Continue the missing CSV rows through the GUI. Review and record each verified row as you finish it; do not generate the script yet.'
+    $next='Develop/test the next saved StepBodies row with agta_replay, or continue recorded Batch exploration. Review and record real verification receipts; incomplete exploration cannot qualify a full result.'
     if ($m.completed) {
-        $next='Exploration is complete, not the whole task. Generate the script, then execute and repair it until the delivered revision passes every row, required assertion and cleanup.'
+        $next='Exploration is complete. A clean first-attempt live plan may already qualify on Close; otherwise Verify the final saved revision after cleanup. Preflight alone is not a passed test.'
     } elseif ($Command -in @('RecordStep','RecordSteps') -and $Result.ok -eq $false) {
         $next='Recording failed without dispatching GUI input. Correct the verification IDs using existing row receipts. Each ID must follow a successful action in that row; recording order is unrestricted. Repeat GUI work only when its actual expected result is missing.'
     } elseif ($Result -and -not (Test-AGTAExplorationCommandSucceeded $Result $Command)) {
         $next='Recover the failed command using observed GUI state, then resume this walkthrough. Do not replace unfinished rows with guessed script steps or deliver a partial result.'
     } elseif (-not $missing.Count) {
-        $next='All rows are recorded. Close exploration-owned windows through the GUI, verify cleanup, then Complete and continue to script generation and execution.'
+        $next='All rows are recorded. Use agta_replay Close for the live plan; otherwise close exploration-owned windows, verify cleanup and Complete before full replay.'
     } elseif ($StepIndex -in $missing -and $Result.verification.eligible) {
         $next='Review whether the observations prove every expectation of this row. If so, record it now; otherwise finish its missing actions and assertions. Continue the remaining rows.'
     }
@@ -257,17 +257,18 @@ function Get-AGTAExplorationStatus {
 }
 
 function Test-AGTAExploration {
-    param([string]$Path, [string]$TestCaseCsv, [string]$InteractionPolicy)
+    param([string]$Path, [string]$TestCaseCsv, [string]$InteractionPolicy, [switch]$AllowIncomplete)
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'Completed exploration manifest is required. Use Invoke-Exploration.ps1 for every CSV row before generating the script.' }
         $m=Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
         if ($m.schemaVersion -ne 1) { throw 'Unsupported exploration manifest version.' }
-        if (-not $m.completed -or -not $m.completedAt) { throw 'Exploration is incomplete. Resume the existing walkthrough: use Status, finish and record every missing CSV row, then Complete before generating or executing. This is unfinished work, not a final-delivery result.' }
+        if ((-not $m.completed -or -not $m.completedAt) -and -not $AllowIncomplete) { throw 'Exploration is incomplete. Resume the existing walkthrough: use Status, finish and record every missing CSV row, then Complete before qualifying replay. Diagnostic step development may continue in agta_replay.' }
         if ($m.interactionPolicy -ne $InteractionPolicy) { throw 'Exploration and execution policies differ.' }
         if ($m.testCaseHash -ne (Get-FileHash -LiteralPath $TestCaseCsv -Algorithm SHA256).Hash) { throw 'Exploration belongs to a different testcase CSV.' }
-        if ($m.transcriptHash -ne (Get-FileHash -LiteralPath $m.transcriptPath -Algorithm SHA256).Hash) { throw 'Exploration transcript changed after completion.' }
+        if ($m.completed -and $m.transcriptHash -ne (Get-FileHash -LiteralPath $m.transcriptPath -Algorithm SHA256).Hash) { throw 'Exploration transcript changed after completion.' }
         $rows=@(Import-Csv -LiteralPath $TestCaseCsv)
-        if ($m.stepCount -ne $rows.Count -or @($m.steps).Count -ne $rows.Count) { throw 'Exploration row coverage differs from the CSV.' }
+        if ($m.stepCount -ne $rows.Count -or ($m.completed -and @($m.steps).Count -ne $rows.Count)) { throw 'Exploration row coverage differs from the CSV.' }
+        if (-not $m.completed -and $AllowIncomplete) { return @{ok=$true;path=$Path;completed=$false;issues=@()} }
         $records=@(Get-Content -LiteralPath $m.transcriptPath | ForEach-Object { $_ | ConvertFrom-Json })
         for ($i=1;$i -le $rows.Count;$i++) {
             $step=@($m.steps | Where-Object {$_.stepIndex -eq $i})

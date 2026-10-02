@@ -33,6 +33,7 @@ Assert-AGTAGeneratedScriptPreflight -ScriptPath $PSCommandPath -TestCaseCsv $Tes
 
 $Context = Initialize-AGTAGeneratedTest -PotatoCliPath $PotatoCliPath -TestCaseCsv $TestCaseCsv -RunRoot $RunRoot -RequireAssertions -InteractionPolicy $InteractionPolicy -PolicyReason $PolicyReason -Transport $Transport -ExplorationPath $ExplorationPath
 $RunRoot = $Context.RunRoot
+$State = @{} # Shared across bodies/live calls; local body variables do not persist.
 # Build GUI output paths from the absolute context, for example:
 # $OutputPath = Join-Path $Context.ExecutionEvidenceRoot 'output.ext'
 # Context.ExecutionEvidenceRoot already exists. Add -PathKind SaveFile/OpenFile

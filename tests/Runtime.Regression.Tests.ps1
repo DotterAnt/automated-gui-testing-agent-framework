@@ -20,6 +20,14 @@ try {
     Complete-AGTAExplorationStep $testRoot 1 'Synthetic test fixture route' 'Fixture verified' $receipt | Out-Null
     Complete-AGTAExploration $testRoot $csv GuiNavigation | Out-Null
     $ctx=Initialize-AGTAGeneratedTest -PotatoCliPath $cliPath -TestCaseCsv $csv -RunRoot $testRoot
+    $staleFile=@{ok=$true;command='wait-file';data=@{conditionMet=$true;exists=$true;path='old-output';lastWriteTimeUtc='2000-01-01T00:00:00Z';creationTimeUtc='2000-01-01T00:00:00Z'}}
+    $staleResult=Invoke-RecordedStep 1 {param($Commands,$Evidence) Assert-FileWait $staleFile}
+    Check ($staleResult.status -eq 'FAIL' -and $staleResult.error -match 'predates this execution') 'Old output passed a fresh Save/Print expectation.'
+    $existingResult=Invoke-RecordedStep 1 {param($Commands,$Evidence) Assert-FileWait $staleFile -AllowExisting}
+    Check ($existingResult.status -eq 'PASS') 'Explicit existing-input expectation lost its opt-in.'
+    $staleFile.data.creationTimeUtc=[DateTime]::UtcNow.AddSeconds(1).ToString('o')
+    $freshCopy=Invoke-RecordedStep 1 {param($Commands,$Evidence) Assert-FileWait $staleFile}
+    Check ($freshCopy.status -eq 'PASS') 'New file preserving source modification time was rejected.'
     $captured=New-Module -ScriptBlock {
         function Invoke-PotatoCliCommand {
             param($Command,$Arguments,$CliRoot,[switch]$AsObject)

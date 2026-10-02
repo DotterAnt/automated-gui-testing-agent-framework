@@ -1,6 +1,6 @@
 # Persistent exploration tools
 
-`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell and the existing exploration entrypoint. It exposes `agta_explore`, `agta_help` and read-only `agta_validate`. One process stays loaded; requests avoid both outer shell-tool startup and cold PowerShell clients. CSV/policy validation, argument normalization, actual receipts, batch failure boundaries, recording eligibility and completion checks still run in `Invoke-Exploration.ps1` with InProcess transport. No app-specific routes are built in. No additional package/runtime installation is needed.
+`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell. It exposes `agta_explore`, `agta_replay`, `agta_inspect`, `agta_help` and read-only `agta_validate`. One process retains live plan variables, ownership and CLI state. CSV/policy, argument, receipt and assertion checks still apply. No app-specific routes or additional package installation are needed. Server version 1.2.0 adds persistent step development; reconnect after updating both repositories.
 
 The server exposes GuiNavigation and VisibleControls by default. It rejects AllowShortcuts even with a nonempty policyReason and blocks mutations of older permissive runs; Status remains available for diagnosis. A model-written explanation is not user authorization. Application actions such as Open/Print must use visible menu/button routes. The operator may add `-EnableShortcutPolicy` to server startup only for an explicitly authorized shortcut task; tools cannot enable that capability, and per-run PolicyReason is still required. Do not add this flag for ordinary GUI tests. These are authoring checks, not an execution sandbox for arbitrary shell code.
 
@@ -18,7 +18,13 @@ tool_timeout_sec = 180
 
 Codex documents stdio servers and the shared desktop/CLI/IDE configuration in [its MCP guide](https://developers.openai.com/codex/mcp/). The configuration belongs on the interactive test machine, where the CLI/framework and applications are installed. Adjust the script path if needed. Start a new agent chat/reconnect the integration after configuration or code updates; verify that `agta_explore` and `agta_help` are available. The server is launched by the MCP client; do not manually start it in a terminal or wrap each request in a shell command. No HTTP listener is involved. The launch's Bypass affects that process only, so it does not require changing machine-wide execution policy.
 
-## Authoring flow
+## Live authoring
+
+Read `agta_help` topic authoring with the CSV once. Begin exploration, write the actual template StepBodies incrementally, and use agta_replay Start/Step. Failure keeps the live state: Status, Repair, retry the failed body or explicitly Skip for diagnostic continuation. Record reviewed receipts with agta_explore RecordSteps. Close qualifies an uninterrupted unchanged first-attempt session without replaying it twice. Repaired sessions need a final clean Verify. Use agta_inspect instead of raw log dumps. See [AUTHORING.md](AUTHORING.md) and, only for session details, [LIVE_REPLAY.md](LIVE_REPLAY.md).
+
+## Legacy recorded batches
+
+The following separate-walkthrough flow is the fallback when live replay tools are unavailable.
 
 Prefer these tools when available. Call `agta_help` with `{"topic":"authoring","testCaseCsv":"<absolute supplied CSV path>"}` to read the guide, template and CSV together once; do not duplicate those reads through shell calls. Guide/template are plain strings without PowerShell provider metadata. Then:
 

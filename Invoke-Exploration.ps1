@@ -107,7 +107,7 @@ try {
     switch ($Action) {
         Begin {
             if (-not $TestCaseCsv) { throw 'Begin requires TestCaseCsv.' }
-            Initialize-AGTAExploration $RunRoot $TestCaseCsv $InteractionPolicy (Get-Item -LiteralPath $PotatoCliPath).FullName | Out-Null
+            Initialize-AGTAExploration $RunRoot $TestCaseCsv $InteractionPolicy (Get-Item -LiteralPath $PotatoCliPath).FullName $PolicyReason | Out-Null
             $result=@{ok=$true;runRoot=$RunRoot;explorationPath=$paths.manifest;explorationEvidenceRoot=$paths.evidenceRoot;steps=@(Import-Csv -LiteralPath $TestCaseCsv);
                 next='Keep this RunRoot. In a PowerShell shell, call & .\Invoke-Exploration.ps1 -Action Batch -RunRoot <this-root> -RequestsJson <literal JSON string>. Auto reuses a host; no OutputEncoding assignment, native pipe or nested powershell.exe is needed. Interactive stdin can instead retain Invoke-ExplorationStream.ps1. Use explorationEvidenceRoot for full GUI paths and type PathKind. Review/RecordSteps, close owned windows, Complete, generate and replay. StopHost leaves exploration resumable.'}
         }

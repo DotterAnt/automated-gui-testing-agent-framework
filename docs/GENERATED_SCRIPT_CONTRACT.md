@@ -4,6 +4,8 @@ Start with `AUTHORING.md` and the template. GuiNavigation is the default; preser
 
 Generated testcase scripts must follow this contract so different agents and API providers produce comparable artifacts.
 
+Prefer live development of these same template StepBodies through agta_replay; incomplete exploration may be used only for diagnostic authoring. Failure retains live state for repair/continuation. A clean unchanged first-attempt session can qualify without a second run; repairs/skips require final full Verify. Diagnostic attempt journals are separate from canonical results. See docs/LIVE_REPLAY.md. Assert-FileWait rejects a file predating the execution by default; AllowExisting is only for an explicit existing-input expectation.
+
 ## Parameters
 
 Runtime initialization resolves RunRoot, CSV, CLI and exploration paths against the PowerShell current location. All context output/evidence/log paths are absolute; derive GUI filenames from Context.ExecutionEvidenceRoot. Result summary.failedSteps and cleanupOk appear before the detailed step transcript to support recovery decisions.

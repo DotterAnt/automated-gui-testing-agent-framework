@@ -18,7 +18,8 @@ function Initialize-AGTAGeneratedTest {
         [ValidateSet('VisibleControls','GuiNavigation','AllowShortcuts')] [string] $InteractionPolicy = 'GuiNavigation',
         [string] $PolicyReason,
         [string] $ExplorationPath,
-        [ValidateSet('InProcess','Process')] [string] $Transport = 'InProcess'
+        [ValidateSet('InProcess','Process')] [string] $Transport = 'InProcess',
+        [ValidateSet('Replay','Diagnostic')] [string] $RunKind = $(if ($script:AGTAPlanSessionKind -eq 'Diagnostic') {'Diagnostic'} else {'Replay'})
     )
 
     # PowerShell's current location can differ from the process current directory.
@@ -44,7 +45,8 @@ function Initialize-AGTAGeneratedTest {
         if (-not $scriptAudit.ok) { throw ('Generated script audit failed before desktop use: '+($scriptAudit.issues -join '; ')) }
     }
     if (-not $ExplorationPath) { $ExplorationPath=Join-Path $RunRoot 'logs\exploration.json' }
-    $exploration=Test-AGTAExploration -Path $ExplorationPath -TestCaseCsv $TestCaseCsv -InteractionPolicy $InteractionPolicy
+    if ($script:AGTAPlanSessionKind -eq 'Diagnostic') {$RunKind='Diagnostic'}
+    $exploration=Test-AGTAExploration -Path $ExplorationPath -TestCaseCsv $TestCaseCsv -InteractionPolicy $InteractionPolicy -AllowIncomplete:($RunKind -eq 'Diagnostic')
     if (-not $exploration.ok) { throw ('Complete GUI exploration is required before execution: '+($exploration.issues -join '; ')) }
     $cliModule = $null
     if ($Transport -eq 'InProcess') {
@@ -63,7 +65,7 @@ function Initialize-AGTAGeneratedTest {
     $resultsRoot = Join-Path -Path $RunRoot -ChildPath 'results'
     $executionEvidenceRoot = Join-Path -Path $evidenceRoot -ChildPath $ExecutionId
     $commandLogPath = Join-Path -Path $logsRoot -ChildPath ("potato-commands-$ExecutionId.jsonl")
-    $resultPath = Join-Path -Path $resultsRoot -ChildPath 'result.json'
+    $resultPath = Join-Path -Path $resultsRoot -ChildPath $(if ($RunKind -eq 'Diagnostic') {"diagnostic-$ExecutionId.json"} else {'result.json'})
 
     foreach ($path in @($RunRoot, $evidenceRoot, $logsRoot, $resultsRoot, $executionEvidenceRoot)) {
         if (-not (Test-Path -LiteralPath $path)) {
@@ -96,6 +98,10 @@ function Initialize-AGTAGeneratedTest {
         Timing = [ordered]@{ commandCount=0; wrapperMs=0L; backendMs=0L; waitMs=0L; cleanupMs=0L }
         LastCommandTiming = $null
         FinalOk = $false
+        RunKind = $RunKind
+        ActiveStep = 0
+        AttemptId = $null
+        RecordExploration = ($RunKind -eq 'Diagnostic' -and -not $exploration.completedAt)
     }
     $script:AGTAOpenedProcessNames = @()
     $script:AGTAOpenedWindows = @()
@@ -141,6 +147,10 @@ function Invoke-PotatoJson {
 
     $context = Get-AGTAGeneratedTestContext
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    if ($context.RecordExploration) {
+        $manifest=[IO.File]::ReadAllText($context.ExplorationPath) | ConvertFrom-Json
+        if ($manifest.completed) {$context.RecordExploration=$false}
+    }
     $Arguments=@(Resolve-AGTACommandArguments $Command $Arguments)
     $raw = @()
     $exitCode = 0
@@ -154,7 +164,6 @@ function Invoke-PotatoJson {
     try {
         if ($context.Transport -eq 'InProcess') {
             $parsed = & $context.CliModule { param($cmd,$values,$root) Invoke-PotatoCliCommand -Command $cmd -Arguments $values -CliRoot $root -AsObject } $Command $effectiveArgs (Split-Path -Parent $context.PotatoCliPath)
-            $raw = @($parsed | ConvertTo-Json -Depth 80 -Compress)
         }
         else {
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $context.PotatoCliPath $Command @effectiveArgs 2>&1 | ForEach-Object { $raw += $_ }
@@ -171,7 +180,6 @@ function Invoke-PotatoJson {
         }
     }
     $watch.Stop()
-    $rawText = @($raw) -join [Environment]::NewLine
     if ($parsed.error.type -eq 'InteractionPolicyViolation') { $context.PolicyCompliant = $false }
     $context.LastCommandTiming = @{wrapperMs=[long]$watch.ElapsedMilliseconds;backendMs=[long]$parsed.durationMs}
     $context.Timing.commandCount++
@@ -189,13 +197,21 @@ function Invoke-PotatoJson {
         timestamp = (Get-Date).ToString('o')
         command = $Command
         arguments = @($Arguments)
-        raw = $rawText
         parsed = $parsed
+        stepIndex = $context.ActiveStep
+        runKind = $context.RunKind
+        attemptId = $context.AttemptId
         wrapperDurationMs = [int]$watch.ElapsedMilliseconds
         transport = $context.Transport
         interactionPolicy = $context.InteractionPolicy
         exitCode = $exitCode
     } | ConvertTo-Json -Depth 80 -Compress | Add-Content -LiteralPath $context.CommandLogPath -Encoding UTF8 -ErrorAction Stop
+
+    if ($context.RecordExploration -and $context.ActiveStep -gt 0) {
+        $receipt=Add-AGTAExplorationCommand $context.RunRoot $context.ActiveStep $Command $Arguments $parsed
+        $parsed | Add-Member -NotePropertyName explorationCommandId -NotePropertyValue $receipt -Force
+        $parsed | Add-Member -NotePropertyName verification -NotePropertyValue (Get-AGTAExplorationVerificationInfo @{command=$Command;result=$parsed}) -Force
+    }
 
     return $parsed
 }
@@ -228,6 +244,9 @@ function New-CommandSummary {
         inputFocus = $(if ($Result.error.focus) { $Result.error.focus } elseif ($Result.data.inputFocus) { $Result.data.inputFocus } else { $null })
     }
     if ($Result.data.visualWait) {$summary.visualWait=$Result.data.visualWait;$summary.evidencePath=$Result.data.path}
+    if ($Command -eq 'screenshot' -and $Result.data.path) {$summary.path=$Result.data.path;$summary.region=$Result.data.region;$summary.format=$Result.data.format}
+    if ($Result.error) {$summary.errorDetails=$Result.error}
+    if ($Result.explorationCommandId) {$summary.explorationCommandId=$Result.explorationCommandId;$summary.verification=$Result.verification}
     [pscustomobject]$summary
 }
 
@@ -323,7 +342,8 @@ function Assert-FileWait {
 
         [string] $Path,
 
-        [string] $Message
+        [string] $Message,
+        [switch] $AllowExisting
     )
 
     $targetPath = if ($Path) { $Path } elseif ($Result.data.path) { [string]$Result.data.path } else { '<unknown path>' }
@@ -333,6 +353,13 @@ function Assert-FileWait {
     if ($null -ne $Result.data.conditionMet) { $conditionMet = [bool]$Result.data.conditionMet }
     elseif ($null -ne $Result.data.exists) { $conditionMet = [bool]$Result.data.exists }
     Assert-ExpectedResult -Condition $conditionMet -Message $failureMessage
+    if ($Result.command -eq 'wait-file' -and $Result.data.lastWriteTimeUtc -and -not $Result.data.waitForNotExists -and -not $AllowExisting) {
+        $modified=[DateTimeOffset]::Parse($Result.data.lastWriteTimeUtc,[Globalization.CultureInfo]::InvariantCulture)
+        $started=(Get-AGTAGeneratedTestContext).StartedAt.ToUniversalTime()
+        $fresh=$modified.UtcDateTime -ge $started
+        if ($Result.data.creationTimeUtc) {$fresh=$fresh -or [DateTimeOffset]::Parse($Result.data.creationTimeUtc,[Globalization.CultureInfo]::InvariantCulture).UtcDateTime -ge $started}
+        Assert-ExpectedResult -Condition $fresh -Message "$failureMessage The file predates this execution; an old output cannot prove this Save/Print succeeded. Use a fresh execution path, or AllowExisting only when the CSV explicitly checks an existing input."
+    }
 }
 
 function Assert-ExpectedResult {
@@ -696,6 +723,9 @@ function Invoke-RecordedStep {
     $commands = @()
     $evidence = @()
     $script:AGTAStepAssertions = @()
+    $context=Get-AGTAGeneratedTestContext
+    $previousStep=$context.ActiveStep
+    $context.ActiveStep=$StepIndex
 
     try {
         & $Body ([ref]$commands) ([ref]$evidence) | Out-Null
@@ -711,6 +741,7 @@ function Invoke-RecordedStep {
         try { Invoke-EvidenceScreenshot -Commands ([ref]$commands) -Evidence ([ref]$evidence) -FileName ("step-{0}-failure.png" -f $StepIndex) | Out-Null } catch {}
         $result = New-StepResult -StepIndex $StepIndex -Action $step.Action -ExpectedResult $step.'Expected Result' -Status 'FAIL' -Evidence $evidence -Commands $commands -ErrorObject $failure
     }
+    finally {$context.ActiveStep=$previousStep}
     $result | Add-Member -NotePropertyName assertions -NotePropertyValue @($script:AGTAStepAssertions)
     return $result
 }
@@ -775,8 +806,15 @@ function Complete-AGTAGeneratedTest {
         }
     }
     $ok = ($context.PolicyCompliant -and $coverageOk -and $validStatuses -and $cleanupOk -and $assertionsOk -and $summary.failed -eq 0 -and $summary.skipped -eq 0)
+    if ($context.RunKind -eq 'Diagnostic') {
+        $ok=$false
+        foreach ($step in $StepResults) {$step.status='DIAGNOSTIC_'+$step.status}
+        $summary=[ordered]@{total=$summary.total;diagnosticPassed=$summary.passed;diagnosticFailed=$summary.failed;diagnosticSkipped=$summary.skipped;cleanupOk=$cleanupOk}
+    }
     $final = [ordered]@{
         ok = $ok
+        runKind = $context.RunKind
+        qualifying = ($context.RunKind -eq 'Replay')
         summary = $summary
         cleanupOk = $cleanupOk
         interactionPolicy = @{ mode=$context.InteractionPolicy; reason=$context.PolicyReason; compliant=$context.PolicyCompliant; assessment='Recorded CLI policy and static script checks; external activity is not sandboxed.'; scriptAuditPerformed=($null -ne $context.ScriptAudit) }
@@ -799,6 +837,9 @@ function Complete-AGTAGeneratedTest {
     $context.Timing.commandOverheadMs = $context.Timing.wrapperMs - $context.Timing.backendMs
     $context.Timing.otherMs = $context.Timing.totalMs - $context.Timing.wrapperMs
     $final | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath $context.ResultPath -Encoding UTF8
+    if ($context.RunKind -eq 'Replay') {
+        $final | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath (Join-Path $context.ResultsRoot ("replay-$($context.ExecutionId).json")) -Encoding UTF8
+    }
     if ($PassThru) { return [pscustomobject]$final }
     if ($OutputMode -eq 'Full') { $final | ConvertTo-Json -Depth 80 -Compress; return }
     ConvertTo-AGTACompactTestResult $final | ConvertTo-Json -Depth 40 -Compress
@@ -808,14 +849,15 @@ function ConvertTo-AGTACompactTestResult {
     param($Result)
     # Full arguments, assertions and cleanup transcripts stay in resultPath.
     # Return actionable failures once instead of replaying every successful call.
-    [ordered]@{ok=$Result.ok;summary=$Result.summary;cleanupOk=$Result.cleanupOk;
+    [ordered]@{ok=$Result.ok;runKind=$Result.runKind;qualifying=$Result.qualifying;summary=$Result.summary;cleanupOk=$Result.cleanupOk;
         coverageOk=$Result.coverageOk;assertionsOk=$Result.assertionsOk;timing=$Result.timing;
         interactionPolicy=$Result.interactionPolicy;testCase=$Result.testCase;
         startedAt=$Result.startedAt;finishedAt=$Result.finishedAt;
         executionId=$Result.executionId;runRoot=$Result.runRoot;artifacts=$Result.artifacts;
         steps=@($Result.steps | ForEach-Object {
             [ordered]@{stepIndex=$_.stepIndex;action=$_.action;status=$_.status;error=$_.error;
-                evidence=$_.evidence;failedCommands=@($_.commands | Where-Object {-not $_.ok})}
+                evidenceCount=@($_.evidence).Count;evidence=@(if ($_.status -in @('FAIL','DIAGNOSTIC_FAIL')) {$_.evidence | Select-Object -Last 2});
+                failedCommands=@($_.commands | Where-Object {-not $_.ok})}
         })}
 }
 

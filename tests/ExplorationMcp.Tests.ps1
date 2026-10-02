@@ -44,7 +44,7 @@ try {
     Check ($hello.result.protocolVersion -eq '2025-06-18' -and $hello.result.capabilities.tools) 'MCP handshake failed.'
     $server.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}');$server.StandardInput.Flush()
     $list=Rpc 'tools/list' @{}
-    Check ($list.result.tools.Count -eq 3 -and $list.result.tools[0].inputSchema.required -contains 'runRoot') 'Tool discovery lost input schemas.'
+    Check ($list.result.tools.Count -eq 5 -and $list.result.tools[0].inputSchema.required -contains 'runRoot') 'Tool discovery lost input schemas.'
     $validationTool=@($list.result.tools | Where-Object {$_.name -eq 'agta_validate'})
     Check ($validationTool.Count -eq 1 -and $validationTool[0].inputSchema.required -contains 'scriptPath') 'Read-only replay validation was missing from MCP discovery.'
     Check ('AllowShortcuts' -notin $list.result.tools[0].inputSchema.properties.interactionPolicy.enum) 'Default MCP schema exposed agent-enabled shortcuts.'
@@ -54,7 +54,7 @@ try {
     Check ($unknown.error.code -eq -32601) 'Unknown method was not a protocol error.'
     $response=Tool @{action='Begin';runRoot=$run;testCaseCsv=$csv;potatoCliPath=$cli}
     $begin=(Values $response)[0]
-    Check (-not $response.result.isError -and $begin.ok -and $begin.next -match 'agta_explore' -and $begin.mcpTiming) 'MCP Begin lost configuration/timing or advertised the shell transport.'
+    Check (-not $response.result.isError -and $begin.ok -and $begin.next -match 'agta_replay' -and $begin.mcpTiming) 'MCP Begin lost live plan guidance/configuration/timing.'
     $replay=Join-Path $root 'replay.ps1';$marker=Join-Path $root 'must-not-exist.txt'
     ('Set-Content -LiteralPath '''+$marker.Replace("'","''")+''' -Value "must not execute"') | Set-Content -LiteralPath $replay
     $validation=Rpc 'tools/call' @{name='agta_validate';arguments=@{runRoot=$run;scriptPath=$replay}}
@@ -122,6 +122,40 @@ try {
     $server.StandardInput.WriteLine('{');$server.StandardInput.Flush()
     $parse=$server.StandardOutput.ReadLine() | ConvertFrom-Json
     Check ($parse.error.code -eq -32700) 'Malformed JSON corrupted stdout or killed the server.'
+
+    # A real stdio session loads the saved plan once. Read-only commands avoid
+    # touching user applications; sealed fixture exploration is test scaffolding.
+    $livePath=Join-Path $root 'live.ps1'
+    @'
+[CmdletBinding()]
+param([string]$PotatoCliPath,[string]$TestCaseCsv,[string]$RunRoot,[string]$FrameworkRoot,[string]$ExplorationPath,[string]$InteractionPolicy='GuiNavigation',[string]$Transport='InProcess',[string]$OutputMode='Compact')
+. (Join-Path $FrameworkRoot 'Framework\GeneratedScriptRuntime.ps1')
+$Context=Initialize-AGTAGeneratedTest -PotatoCliPath $PotatoCliPath -TestCaseCsv $TestCaseCsv -RunRoot $RunRoot -ExplorationPath $ExplorationPath -InteractionPolicy $InteractionPolicy -Transport $Transport
+$State=@{calls=0}
+$StepBodies=@({param([ref]$Commands,[ref]$Evidence)
+    $State.calls++
+    $observed=Invoke-StepCommand $Commands state @()
+    Assert-PotatoOk $observed
+    Assert-ExpectedResult ($State.calls -eq 1) 'Fixture plan setup/body were invoked once'
+})
+Invoke-AGTATestPlan -StepBodies $StepBodies -OutputMode $OutputMode
+exit (Get-AGTATestExitCode)
+'@ | Set-Content $livePath
+    $startPlan=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Start';runRoot=$sealed;scriptPath=$livePath;includeImages=$false}}
+    $live=(Values $startPlan)[0]
+    Check (-not $startPlan.result.isError -and $live.nextStepIndex -eq 1 -and $live.runKind -eq 'Diagnostic') 'MCP failed to load template setup without exiting.'
+    $stepPlan=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Step';runRoot=$sealed;includeImages=$false}}
+    Check (-not $stepPlan.result.isError -and (Values $stepPlan)[0].countsAsSuccessfulStep -and (Values $stepPlan)[0].status -eq 'FIRST_ATTEMPT_SUCCESS') 'MCP lost first-attempt step results or persistent plan variables.'
+    $inspection=Rpc 'tools/call' @{name='agta_inspect';arguments=@{runRoot=$sealed;source='replay';last=1}}
+    Check (-not $inspection.result.isError -and (Values $inspection)[0].commands[0].command -eq 'state') 'Structured MCP inspection failed.'
+    $closePlan=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Close';runRoot=$sealed;includeImages=$false}}
+    $qualified=(Values $closePlan)[0]
+    Check (-not $closePlan.result.isError -and $qualified.ok -and $qualified.qualifying -and $qualified.artifacts.executionMode -eq 'IncrementalFirstAttempt') 'MCP did not qualify an unrepaired session on Close.'
+    $verifyPlan=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Verify';runRoot=$sealed;includeImages=$false}}
+    Check (-not $verifyPlan.result.isError -and (Values $verifyPlan)[0].executionId -eq $qualified.executionId) 'MCP replayed already qualified steps unnecessarily.'
+    $fullHelp=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='cli';names=@('type');detail='full'}}
+    $compactHelp=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='cli';names=@('type')}}
+    Check (-not $fullHelp.result.isError -and $fullHelp.result.content[0].text.Length -gt $compactHelp.result.content[0].text.Length -and ($compactHelp.result.content[0].text | ConvertFrom-Json).data.commands.type.usage -match 'PathKind') 'Full behavioral help was unavailable or compact signatures were lost.'
     $ping=Rpc ping @{}
     Check (-not $ping.error -and $ping.result -and -not $server.HasExited) 'MCP did not recover after protocol errors.'
     if ($Gui) {
@@ -186,6 +220,46 @@ try {
                 @{stepIndex=1;command='windows';arguments=@('-Foreground','-WindowTitle',$title,'-TimeoutMs','3000')})}
             Check (-not $response.result.isError -and (Values $response)[-1].data.count -eq 1) 'MCP did not close the actual menu dialog through its visible button.'
         }
+        $liveGuiRun=Join-Path $root 'live-gui'
+        Tool @{action='Begin';runRoot=$liveGuiRun;testCaseCsv=$csv;potatoCliPath=$cli} | Out-Null
+        $liveGuiPath=Join-Path $root 'live-gui.ps1'
+        $liveGuiSource=@'
+[CmdletBinding()]
+param([string]$PotatoCliPath,[string]$TestCaseCsv,[string]$RunRoot,[string]$FrameworkRoot,[string]$ExplorationPath,[string]$InteractionPolicy='GuiNavigation',[string]$Transport='InProcess',[string]$OutputMode='Compact')
+. (Join-Path $FrameworkRoot 'Framework\GeneratedScriptRuntime.ps1')
+$Context=Initialize-AGTAGeneratedTest -PotatoCliPath $PotatoCliPath -TestCaseCsv $TestCaseCsv -RunRoot $RunRoot -ExplorationPath $ExplorationPath -InteractionPolicy $InteractionPolicy -Transport $Transport
+$StepBodies=@({param([ref]$Commands,[ref]$Evidence)
+    $window=Invoke-StepCommand $Commands windows @('-Foreground','-WindowTitle',TITLE_LITERAL,'-TimeoutMs','3000')
+    Assert-PotatoFound $window
+    $scope=@('-Scope','ForegroundWindow','-WindowSelectorJson',$window.data.foregroundSelector,'-FallbackReason','Isolated live MCP fixture','-FallbackEvidence',$Context.CommandLogPath)
+    $shot=Invoke-StepCommand $Commands screenshot ($scope+@('-OutFile',(Join-Path $Context.ExecutionEvidenceRoot 'live.png')))
+    Assert-PotatoOk $shot
+    Add-EvidencePath $Evidence $shot.data.path
+    $clicked=Invoke-StepCommand $Commands click ($scope+@('-Name','Missing fixture field','-TimeoutMs','0'))
+    Assert-PotatoOk $clicked
+    $field=Invoke-StepCommand $Commands select ($scope+@('-Name','Fixture filename','-TimeoutMs','0'))
+    Assert-PotatoFound $field
+})
+Invoke-AGTATestPlan -StepBodies $StepBodies -OutputMode $OutputMode
+exit (Get-AGTATestExitCode)
+'@
+        $liveGuiSource=$liveGuiSource.Replace('TITLE_LITERAL',"'"+$title.Replace("'","''")+"'")
+        $liveGuiSource | Set-Content $liveGuiPath
+        $liveStart=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Start';runRoot=$liveGuiRun;scriptPath=$liveGuiPath}}
+        Check (-not $liveStart.result.isError) 'MCP could not load a live GUI plan.'
+        $liveFailure=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Step';runRoot=$liveGuiRun}}
+        $failedLive=(Values $liveFailure)[0]
+        $failureImages=@($liveFailure.result.content | Where-Object {$_.type -eq 'image'})
+        Check ($liveFailure.result.isError -and $failedLive.status -eq 'DIAGNOSTIC_FAILURE' -and $failureImages.Count -eq 1 -and $failedLive.images[0].region.width -gt 0) 'MCP failure lost live state, current screenshot or physical origin.'
+        $liveBlocked=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Step';runRoot=$liveGuiRun}}
+        Check ($liveBlocked.result.isError -and (Values $liveBlocked)[0].error -match 'Status') 'MCP accepted an unreviewed retry.'
+        Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Status';runRoot=$liveGuiRun}} | Out-Null
+        $liveGuiSource.Replace('Missing fixture field','Fixture filename') | Set-Content $liveGuiPath
+        $liveRetry=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Step';runRoot=$liveGuiRun}}
+        Check (-not $liveRetry.result.isError -and (Values $liveRetry)[0].status -eq 'RECOVERY_SUCCESS' -and -not (Values $liveRetry)[0].countsAsSuccessfulStep) 'MCP did not reload/retry only the failed body.'
+        $liveClosed=Rpc 'tools/call' @{name='agta_replay';arguments=@{action='Close';runRoot=$liveGuiRun}}
+        Check (-not $liveClosed.result.isError -and -not (Values $liveClosed)[0].qualifying -and -not (Test-Path (Join-Path $liveGuiRun 'results\result.json'))) 'MCP published diagnostic recovery as a clean result.'
+        Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='focus';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title)})} | Out-Null
         $response=Tool @{action='RecordSteps';runRoot=$guiRun;requests=@(@{stepIndex=1;route='Focused observed fixture, typed and read literal filename';observedResult='Actual Unicode path read back';verificationCommandIds=@($typed.explorationCommandId,$read.explorationCommandId)})}
         Check (-not $response.result.isError) 'MCP could not record actual GUI verification receipts.'
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
