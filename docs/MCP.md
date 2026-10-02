@@ -56,11 +56,13 @@ For closure, use a Batch windows command with the exact owned WindowIdentityJson
 
 Targeted signatures: `agta_help` with `{"topic":"cli","names":["type","observe"]}` or `{"topic":"runtime","names":["Invoke-StepCommand","Assert-TextContains"]}`. Do not read entire contracts/modules or unrelated testcase examples speculatively. The shell/direct and interactive stream transports remain available when MCP tools are unavailable.
 
-After Complete and generation, call `agta_validate` with `{"runRoot":"<existing absolute exploration root>","scriptPath":"<absolute replay.ps1>"}`. This uses the saved CSV/CLI/policy/manifest and parses the replay without executing it. It rejects incomplete exploration and policy/signature/assertion issues, returns the checked script hash, and always reports replayExecuted/taskComplete false. A parser-only check cannot replace full preflight or the actual replay. Execute the checked revision and inspect its assertions and cleanup result.
+Complete returns the compact tested replay reference inline, with its saved path for later use. Do not load the verbose exploration-routes.json discovery export. After compaction, `agta_help` with `{"topic":"replay","runRoot":"<root>","stepIndex":1}` restores only the requested row's tested arguments. Generate and call Replay Verify; it validates internally. `agta_validate` is an optional read-only standalone preflight for an unresolved source question, not a required extra call before each Step/Verify.
 
 ## Timing and diagnosis
 
 Screenshot commands return PNG/JPEG pixels inline with their receipt and physical region, eliminating a separate image-view call. Up to the last two screenshots of a Batch are attached, each bounded to 10 MiB; the saved files remain authoritative. Batch includeImages false disables attachments. Inspect returned pixels directly; do not call view_image again for the same image. Unsupported formats/oversized images retain their valid receipt/path with an inline warning. Compact windows preserve actionable identity/guards/bounds while full property details stay in the command transcript.
+
+Compact observe presents one `elementColumns` header and `elementRows` arrays. Bounds are `[x,y,width,height]` in physical pixels. Flags contain focused/disabled/offscreen/ambiguous only when applicable; every node, pattern and selector is preserved. The original objects remain in the transcript. Target small observations before broadening depth/node budgets. Original screenshots remain unchanged.
 
 The last exploration response includes `mcpTiming.requestMs`, measuring server dispatch, CLI and receipt work. The client/tool round trip can add time outside it. Startup/import costs are paid once per server connection. Actual UI provider work, literal typing and required postcondition waits remain.
 

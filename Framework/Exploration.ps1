@@ -1,4 +1,28 @@
 # Evidence-backed authoring checkpoint. This is an audit trail, not a sandbox.
+function Test-AGTAReadOnlyCommand {
+    param([string]$Command)
+    $Command -in @('help','observe','select','read','read-pdf','windows','state','screenshot','wait-element','wait-file')
+}
+
+function ConvertTo-AGTAObservationRows {
+    param($Data)
+    # Wire presentation only: full CLI receipts retain the original objects.
+    # Repeat column names once instead of on every node of every observation.
+    if (-not $Data -or -not $Data.elements -or $null -eq $Data.elements[0].role) {return $Data}
+    $result=[ordered]@{}
+    if ($Data -is [Collections.IDictionary]) {foreach ($key in $Data.Keys) {if ($key -ne 'elements') {$result[$key]=$Data[$key]}}}
+    else {foreach ($key in $Data.PSObject.Properties.Name) {if ($key -ne 'elements') {$result[$key]=$Data.$key}}}
+    $result.elementColumns=@('depth','name','id','role','className','boundsXYWH','patterns','selector','flags','propertyErrors')
+    $result.elementRows=@(foreach ($element in $Data.elements) {
+        $flags=@(if ($element.focused) {'focused'};if (-not $element.enabled) {'disabled'};if ($element.offscreen) {'offscreen'};if ($element.ambiguous) {'ambiguous'})
+        # A unary comma preserves each array as a row, including one-node trees.
+        ,@($element.depth,$element.name,$element.id,$element.role,$element.className,
+            @($element.bounds.x,$element.bounds.y,$element.bounds.width,$element.bounds.height),
+            @($element.patterns),$element.selector,$flags,@($element.propertyErrors))
+    })
+    return $result
+}
+
 function ConvertTo-AGTACompactWindowData {
     param($Data)
     $result=[ordered]@{}
@@ -198,7 +222,7 @@ function Complete-AGTAExploration {
             'First-run/import/already-present state may change during exploration. Probe optional controls without input; branch on actual state before mandatory actions.',
             'Opaque asynchronous controls: screenshot WaitForImageMatch plus observed MatchRegionJson and clockwise ReferenceRotation awaits expected image pixels. WaitForChangeFrom/ChangeRegionJson only awaits change/stability, which can be a loading screen. Preserve tested waits, bounds/origin and assert conditionMet; never repeat clicks or raise content tolerances after a stale capture.',
             'Every content/layout expectation needs actual replay assertions. Screenshot existence, dimensions and PDF markers do not prove the image or absence of cropping.',
-            'Runtime preflights each replay. After a repair, run the script directly; use one targeted read-only check for an unresolved argument/signature error instead of duplicate parse plus preflight calls.');
+            'Step/Verify preflight internally. Failed Verify retains state: Status, edit bodies/helpers, Repair, Skip a manually finished row or retry after restoring entry state, then continue Step. Close after reaching the end, then one final Verify. Never restart successful rows for a selector/helper edit.');
         steps=@($routes | ForEach-Object {
             $row=$_
             [ordered]@{stepIndex=$row.stepIndex;route=$row.route;observedResult=$row.observedResult;

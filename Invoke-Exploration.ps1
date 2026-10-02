@@ -41,10 +41,18 @@ function Write-Response($Result, [int]$ActiveStep=0, [string]$ActiveCommand, [bo
         # Complete command results remain in the transcript; never truncate readback.
         $data=$Result.data
         if ($Result.command -eq 'windows' -and $data) {$data=ConvertTo-AGTACompactWindowData $data}
+        if ($Result.command -eq 'observe' -and $data) {$data=ConvertTo-AGTAObservationRows $data}
         $Result=[ordered]@{ok=$Result.ok;command=$Result.command;data=$data;error=$Result.error;
             outcome=$Result.outcome;durationMs=$Result.durationMs;totalDurationMs=$Result.totalDurationMs;
             explorationCommandId=$Result.explorationCommandId;verification=$Result.verification}
         if ($workflow) {$Result.workflow=$workflow}
+        if ($ActiveCommand -eq 'observe') {$Result.fullLogPath=$paths.transcript}
+    }
+    if ($OutputMode -eq 'Compact' -and $Result.replayReferencePath) {
+        $Result.replayReference=[IO.File]::ReadAllText($Result.replayReferencePath) | ConvertFrom-Json
+        # The verbose discovery export is retained on disk, not recommended as
+        # the agent's handoff. Inline the tested replay route before compaction.
+        $Result.Remove('routesPath')
     }
     $Result | ConvertTo-Json -Depth 80 -Compress
 }

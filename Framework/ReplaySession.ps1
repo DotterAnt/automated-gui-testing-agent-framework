@@ -17,6 +17,7 @@ function Get-AGTAPlanDefinition {
     $assignment=$assignments[0]
     $array=$assignment.Right.Expression
     if ($array -isnot [Management.Automation.Language.ArrayExpressionAst]) {throw 'StepBodies must be a literal array of scriptblocks.'}
+    $bodyAsts=New-Object 'Collections.Generic.List[Management.Automation.Language.ScriptBlockAst]'
     $bodies=@(foreach ($statement in $array.SubExpression.Statements) {
         if ($statement -isnot [Management.Automation.Language.PipelineAst] -or $statement.PipelineElements.Count -ne 1 -or
             $statement.PipelineElements[0] -isnot [Management.Automation.Language.CommandExpressionAst]) {throw 'StepBodies may contain only literal scriptblocks.'}
@@ -24,6 +25,7 @@ function Get-AGTAPlanDefinition {
         $items=if ($expression -is [Management.Automation.Language.ArrayLiteralAst]) {@($expression.Elements)} else {@($expression)}
         foreach ($item in $items) {
             if ($item -isnot [Management.Automation.Language.ScriptBlockExpressionAst]) {throw 'StepBodies may contain only literal scriptblocks.'}
+            $bodyAsts.Add($item.ScriptBlock)
             $item.ScriptBlock.Extent.Text
         }
     })
@@ -66,7 +68,7 @@ function Get-AGTAPlanDefinition {
         $helpersHash=[BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($helpers.text -join "`n")))).Replace('-','')
         $scriptHash=[BitConverter]::ToString($hash.ComputeHash($bytes)).Replace('-','')
     } finally {$hash.Dispose()}
-    @{path=$ScriptPath;prefix=$prefix;bodies=$bodies;helpers=$helpers;helpersHash=$helpersHash;setupHash=$setupHash;scriptHash=$scriptHash}
+    @{path=$ScriptPath;prefix=$prefix;bodies=$bodies;bodyAsts=$bodyAsts.ToArray();helpers=$helpers;helpersHash=$helpersHash;setupHash=$setupHash;scriptHash=$scriptHash}
 }
 
 function Import-AGTAPlanSession {
@@ -94,7 +96,7 @@ function Import-AGTAPlanSession {
             $prefixTokens=$null;$prefixErrors=$null
             $prefixAst=[Management.Automation.Language.Parser]::ParseInput($definition.prefix,$definition.path,[ref]$prefixTokens,[ref]$prefixErrors)
             . ($prefixAst.GetScriptBlock()) @parameters | Out-Null
-            $script:StepBodies=@(foreach ($body in $script:AGTAPlanDefinition.bodies) {[scriptblock]::Create($body.Substring(1,$body.Length-2))})
+            $script:StepBodies=@(foreach ($body in $script:AGTAPlanDefinition.bodyAsts) {$body.GetScriptBlock()})
             # New-Module otherwise imports all these functions into the MCP
             # caller, leaving stale exported copies after helper removal and
             # allowing one plan's runtime/context to shadow another's.
@@ -130,7 +132,7 @@ function Update-AGTAPlanSession {
         foreach ($helper in $definition.helpers) {
             Set-Item -LiteralPath ('Function:\script:'+$helper.name) -Value ($helper.ast.Body.GetScriptBlock())
         }
-        $script:StepBodies=@(foreach ($body in $definition.bodies) {[scriptblock]::Create($body.Substring(1,$body.Length-2))})
+        $script:StepBodies=@(foreach ($body in $definition.bodyAsts) {$body.GetScriptBlock()})
         $script:AGTAPlanDefinition=$definition
     } $definition
     $Session.definition=$definition
@@ -195,7 +197,7 @@ function Invoke-AGTAPlanRepair {
     if ($Session.closed -or $Session.needsReview) {throw 'Inspect Status before repairing a failed live session.'}
     if ($Requests.Count -lt 1 -or $Requests.Count -gt 20) {throw 'Repair accepts 1..20 sequential commands.'}
     $ctx=$Session.context
-    if (-not $StepIndex -and @($Requests | Where-Object {$_.command -notin @('observe','select','read','read-pdf','windows','state','screenshot','wait-element','wait-file')}).Count) {throw 'Repair GUI input requires an explicit stepIndex identifying the actual CSV row. Requests are literal values, not script variables. Retry Step after restoring its entry state, or Skip a manually completed pending row before continuing.'}
+    if (-not $StepIndex -and @($Requests | Where-Object {-not (Test-AGTAReadOnlyCommand $_.command)}).Count) {throw 'Repair GUI input requires an explicit stepIndex identifying the actual CSV row. Requests are literal values, not script variables. Retry Step after restoring its entry state, or Skip a manually completed pending row before continuing.'}
     if (-not $StepIndex) {$StepIndex=[Math]::Min($Session.nextStepIndex,$ctx.Steps.Count)}
     if ($StepIndex -lt 1 -or $StepIndex -gt $ctx.Steps.Count) {throw 'Repair stepIndex must identify an existing CSV row.'}
     $ctx.ActiveStep=$StepIndex
@@ -204,13 +206,14 @@ function Invoke-AGTAPlanRepair {
     try {
         foreach ($request in $Requests) {
             if ($request.command -isnot [string] -or $request.arguments -isnot [array]) {throw 'Repair command needs command and arguments array.'}
-            if ($request.command -notin @('observe','select','read','read-pdf','windows','state','screenshot','wait-element','wait-file')) {$Session.tainted=$true}
+            if (-not (Test-AGTAReadOnlyCommand $request.command)) {$Session.tainted=$true}
             $result=& $Session.module {param($command,$arguments) Invoke-PotatoJson $command $arguments} $request.command $request.arguments
             $Session.repairs+=,@{stepIndex=$ctx.ActiveStep;command=$request.command;arguments=$request.arguments;ok=$result.ok;attemptId=$ctx.AttemptId}
             $success=Test-AGTAExplorationCommandSucceeded $result $request.command
             if (-not $success) {$Session.needsReview=$true}
             $data=$result.data
             if ($request.command -eq 'windows') {$data=ConvertTo-AGTACompactWindowData $data}
+            if ($request.command -eq 'observe') {$data=ConvertTo-AGTAObservationRows $data}
             [ordered]@{ok=$success;runKind='Diagnostic';qualifying=$false;stepIndex=$ctx.ActiveStep;nextStepIndex=$Session.nextStepIndex;command=$request.command;data=$data;error=$result.error;
                 explorationCommandId=$result.explorationCommandId;verification=$result.verification}
             if (-not $success) {break}
@@ -240,13 +243,26 @@ function Get-AGTAPlanStatus {
 }
 
 function Close-AGTAPlanSession {
-    param($Session)
+    param($Session,[string]$Reason)
     if ($Session.qualified) {
         if ($Session.definition.scriptHash -ne (Get-FileHash -LiteralPath $Session.scriptPath -Algorithm SHA256).Hash) {throw 'The qualified script revision changed. Use Verify to test the final saved revision; the previous result remains historical.'}
         return $Session.finalResult
     }
-    $updateError=$null
-    try {Update-AGTAPlanSession $Session} catch {$updateError=$_.Exception.Message;$Session.tainted=$true}
+    $updateError=$null;$setupChanged=$false
+    try {Update-AGTAPlanSession $Session} catch {
+        $updateError=$_.Exception.Message;$Session.tainted=$true
+        try {$setupChanged=(Get-AGTAPlanDefinition $Session.scriptPath).setupHash -ne $Session.definition.setupHash} catch {}
+    }
+    $unfinishedFailure=(-not $Session.closed -and $Session.nextStepIndex -le $Session.context.Steps.Count -and
+        @($Session.attempts | Where-Object {$_.status -eq 'DIAGNOSTIC_FAILURE'}).Count -gt 0)
+    if ($unfinishedFailure -and -not $setupChanged -and [string]::IsNullOrWhiteSpace($Reason)) {
+        throw 'Recovery is unfinished; Close would discard the retained state and repeat successful rows. Call Status, edit bodies/helpers, Repair the failed action, finish this row live, Skip with a reason, and continue Step. Retry Step only after restoring row entry state. Close normally after the last row. To abandon an unrecoverable/cancelled session and clean owned windows, Close with an explicit reason; abandonment remains diagnostic.'
+    }
+    if ($unfinishedFailure) {
+        $Session.tainted=$true
+        $Session.repairs+=,@{status='ABANDONED';countsAsSuccessfulStep=$false;stepIndex=$Session.nextStepIndex;
+            reason=$(if ($Reason) {$Reason} else {$updateError})}
+    }
     $activeWatch=[Diagnostics.Stopwatch]::StartNew()
     $cleanup=if ($Session.closed) {@($Session.cleanup)} else {@(& $Session.module {Invoke-TestCleanup})}
     if (-not $Session.closed) {$Session.activeMs+=$activeWatch.ElapsedMilliseconds}
@@ -272,8 +288,11 @@ function Close-AGTAPlanSession {
         $Session.qualified=$true
         $Session.finalResult
     } else {
+        $abandonment=@($Session.repairs | Where-Object {$_.status -eq 'ABANDONED'} | Select-Object -Last 1)
         @{ok=$true;runKind='Diagnostic';qualifying=$false;cleanupOk=(@($cleanup | Where-Object {-not $_.ok}).Count -eq 0);
-            resultPath=$Session.diagnosticResultPath;updateError=$updateError;next='Recovery work is preserved. Verify the final revision from the beginning for a qualifying full result.'}
+            status=$(if ($abandonment.Count) {'ABANDONED'} else {'DIAGNOSTIC_CLOSED'});
+            resultPath=$Session.diagnosticResultPath;updateError=$updateError;
+            next=$(if ($abandonment.Count) {'Abandoned session cleaned up; unfinished rows are not passed. Correct/reset the required state before a fresh Verify.'} else {'Recovery work is preserved. Verify the final revision from the beginning for a qualifying full result.'})}
     }
 }
 

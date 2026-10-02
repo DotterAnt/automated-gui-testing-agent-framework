@@ -107,6 +107,9 @@ try {
     $first=Invoke-AGTAPlanStep $session;Record $session $first
     $failure=Invoke-AGTAPlanStep $session
     Check (-not $failure.ok -and $session.nextStepIndex -eq 2 -and -not $session.closed) 'Failure closed/reset the application/session.'
+    Check ($failure.location.file -eq $path -and $failure.location.line -gt 1 -and ($failure.location.stack -join ' ') -match [regex]::Escape($path)) 'Retained body failure lost the saved file/line and forced broad source discovery.'
+    Reject {Close-AGTAPlanSession $session} 'Close discarded unfinished recovery instead of preserving live state.' | Out-Null
+    Check (-not $session.closed -and (& $session.module {$State.value}) -eq 1) 'Rejected Close cleaned/restarted the retained prefix.'
     Reject {Invoke-AGTAPlanStep $session} 'Unreviewed failure accepted more input.' | Out-Null
     Get-AGTAPlanStatus $session | Out-Null
     (Get-Content $path -Raw).Replace($bad,$good) | Set-Content $path
@@ -144,6 +147,12 @@ try {
     Reject {Invoke-AGTAPlanStep $session} 'Setup reload silently reset live variables.' | Out-Null
     $closed=Close-AGTAPlanSession $session
     Check ($session.closed -and $closed.updateError -match 'setup changed') 'Invalid edited setup prevented owned cleanup.'
+    $run=Join-Path $root 'abandoned';$path=New-Plan $run $bad
+    $session=Import-AGTAPlanSession $run $path;$sessions+=,$session;Install-Fixture $session
+    Invoke-AGTAPlanStep $session | Out-Null;Invoke-AGTAPlanStep $session | Out-Null
+    $closed=Close-AGTAPlanSession $session -Reason 'Fixture cancelled by its operator'
+    $journal=Get-Content $session.diagnosticResultPath -Raw | ConvertFrom-Json
+    Check ($session.closed -and -not $closed.qualifying -and $journal.repairs[-1].status -eq 'ABANDONED' -and -not $journal.repairs[-1].countsAsSuccessfulStep -and $journal.repairs[-1].reason -match 'cancelled') 'Explicit abandonment blocked cleanup or masqueraded as successful recovery.'
     @{ok=$true;checks=$script:checks;psVersion=$PSVersionTable.PSVersion.ToString()} | ConvertTo-Json -Compress
 } finally {
     foreach ($session in $sessions) {Remove-Module $session.module -ErrorAction SilentlyContinue}

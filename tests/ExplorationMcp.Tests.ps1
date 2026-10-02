@@ -67,6 +67,8 @@ try {
     Check ($response.result.isError -and (Values $response)[0].error -match 'saved body' -and -not (Test-Path (Join-Path $liveDefault 'logs\exploration-commands.jsonl'))) 'Default live workflow silently dispatched a separate GUI walkthrough.'
     $response=Tool @{action='Batch';runRoot=$liveDefault;requests=@(@{stepIndex=1;command='state';arguments=@()})}
     Check (-not $response.result.isError) 'Default live workflow blocked bounded read-only discovery.'
+    $response=Tool @{action='Batch';runRoot=$liveDefault;requests=@(@{stepIndex=1;command='help';arguments=@('-Topic','type','-Format','Compact')})}
+    Check (-not $response.result.isError) 'Explicit Live discovery classified help as GUI input.'
     $response=Tool @{action='Begin';runRoot=$run;testCaseCsv=$csv;potatoCliPath=$cli;workflowMode='RecordedBatch'}
     $begin=(Values $response)[0]
     Check (-not $response.result.isError -and $begin.ok -and $begin.workflowMode -eq 'RecordedBatch' -and $begin.mcpTiming) 'MCP Begin lost explicit compatibility configuration/timing.'
@@ -121,6 +123,9 @@ try {
     $validationValue=(Values $validation)[0]
     Check (-not $validation.result.isError -and $validationValue.ok -and -not $validationValue.replayExecuted -and -not $validationValue.taskComplete -and $validationValue.scriptHash -eq (Get-FileHash $replay).Hash) 'MCP static validation claimed replay completion or lost the exact checked revision.'
     Check (-not $complete.result.isError -and (Values $complete)[0].replayReferencePath -and (Test-Path -LiteralPath (Values $complete)[0].replayReferencePath)) 'MCP did not seal and export a verified fixture run.'
+    Check ((Values $complete)[0].replayReference.steps[0].commands[0].command -eq 'click' -and -not (Values $complete)[0].routesPath) 'Complete recommended the verbose discovery history instead of returning the compact tested route.'
+    $restored=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='replay';runRoot=$sealed;stepIndex=1}}
+    Check (-not $restored.result.isError -and (Values $restored)[0].steps.Count -eq 1 -and (Values $restored)[0].steps[0].observedResult -eq 'Unit fixture observation') 'Replay help could not restore the tested row after compaction.'
     $response=Tool @{action='Status';runRoot=$run}
     Check (-not $response.result.isError -and (Values $response)[0].commandCount -eq 2 -and -not $server.HasExited) 'Completing another run killed the server or changed this run.'
     $help=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='runtime';names=@('Invoke-StepCommand','Assert-ZipTextContains','Assert-ImageContainsColors')}}
@@ -185,7 +190,11 @@ exit (Get-AGTATestExitCode)
     Check ($failedVerify.result.isError -and $failure.status -eq 'DIAGNOSTIC_FAILURE' -and $failure.next -match 'kept the live') 'Failed Verify cleaned/reset the live session instead of retaining it.'
     $blocked=Tool @{action='Replay';replayAction='Verify';runRoot=$sealed;includeImages=$false}
     Check ($blocked.result.isError -and (Values $blocked)[0].error -match 'Close the live') 'Repeated full Verify bypassed a retained failure.'
+    $blockedClose=Tool @{action='Replay';replayAction='Close';runRoot=$sealed;includeImages=$false}
+    Check ($blockedClose.result.isError -and (Values $blockedClose)[0].error -match 'Recovery is unfinished') 'Close allowed the failed Verify/full-restart loop.'
     Tool @{action='Replay';replayAction='Status';runRoot=$sealed;includeImages=$false} | Out-Null
+    $liveHelp=Tool @{action='Replay';replayAction='Repair';runRoot=$sealed;requests=@(@{command='help';arguments=@('-Topic','type','-Format','Compact')});includeImages=$false}
+    Check (-not $liveHelp.result.isError) 'Read-only help was classified as desktop input during retained replay recovery.'
     $cleanSource.Replace('State.calls -eq 1','State.calls -eq 2') | Set-Content $livePath
     $recovered=Tool @{action='Replay';replayAction='Step';runRoot=$sealed;includeImages=$false}
     Check (-not $recovered.result.isError -and (Values $recovered)[0].status -eq 'RECOVERY_SUCCESS') 'Verify recovery restarted setup rather than retaining live variables.'

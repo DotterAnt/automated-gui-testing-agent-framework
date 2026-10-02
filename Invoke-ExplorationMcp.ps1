@@ -30,16 +30,17 @@ $tools=@(
         inputSchema=@{type='object';required=@('runRoot','scriptPath');additionalProperties=$false;properties=@{
             runRoot=@{type='string';description='Absolute existing exploration runRoot.'};scriptPath=@{type='string';description='Absolute generated replay path.'}
         }}}
-    @{name='agta_help';description='Read the authoring guide/template once, or targeted CLI/runtime signatures. Use topic authoring first; cli/runtime require observed missing names. Full command receipts and results remain on disk.';
+    @{name='agta_help';description='Read the authoring guide/template once, targeted CLI/runtime signatures, or restore a tested replay row after compaction. Use topic authoring first; replay takes runRoot and optional stepIndex. Complete already returns the compact route inline; do not dump verbose discovery history or runtime modules.';
         inputSchema=@{type='object';required=@('topic');additionalProperties=$false;properties=@{
-            topic=@{type='string';enum=@('authoring','cli','runtime')};testCaseCsv=@{type='string';description='Authoring context can include the supplied CSV alongside the guide/template.'};names=@{type='array';minItems=1;maxItems=20;items=@{type='string'}};
+            topic=@{type='string';enum=@('authoring','cli','runtime','replay')};testCaseCsv=@{type='string';description='Authoring context can include the supplied CSV alongside the guide/template.'};names=@{type='array';minItems=1;maxItems=20;items=@{type='string'}};
+            runRoot=@{type='string';description='Replay topic: completed run whose tested route reference should be restored after context compaction.'};stepIndex=@{type='integer';minimum=1;description='Replay topic: return only this CSV row; omit for all rows.'};
             detail=@{type='string';enum=@('signatures','full');description='Targeted help defaults to compact signatures; request full only for unresolved behavior.'}
         }}}
     @{name='agta_replay';description='After recorded exploration, Verify runs the saved script once and stops at failure with live state retained. Inspect Status, edit bodies/helpers in place, Repair the failed action with its CSV stepIndex, then Step after restoring row entry state or Skip a manually finished row and continue. Do not Close/Start for selector/helper edits or restart successful rows. First-attempt successes count; clean full execution qualifies without repetition. Repaired sessions remain diagnostic and need one final clean Verify.';
         inputSchema=@{type='object';required=@('action','runRoot');additionalProperties=$false;properties=@{
             action=@{type='string';enum=@('Start','Step','Repair','Skip','Status','Close','Verify')};runRoot=@{type='string'};
             scriptPath=@{type='string';description='Absolute template-based script path for Start/Verify; Step reloads saved bodies and helper functions without resetting state.'};
-            stepIndex=@{type='integer';minimum=1;description='Step: next pending row. Repair: required for GUI input, identifies the actual CSV row for receipts; does not advance the plan.'};reason=@{type='string';description='Required for diagnostic Skip.'};
+            stepIndex=@{type='integer';minimum=1;description='Step: next pending row. Repair: required for GUI input, identifies the actual CSV row for receipts; does not advance the plan.'};reason=@{type='string';description='Skip: required. Close: explicit abandonment reason only when recovery cannot continue or the task is cancelled. Normal Close follows the last row; helpers/selectors reload live.'};
             requests=@{type='array';minItems=1;maxItems=20;items=@{type='object';required=@('command','arguments');additionalProperties=$false;properties=@{command=@{type='string'};arguments=@{type='array'}}}};
             includeImages=@{type='boolean';description='Return up to two retained screenshot evidence files inline; default true.'}
         }}}
@@ -68,11 +69,11 @@ function Invoke-McpTool($Name,$Arguments) {
         $manifestPath=Join-Path $runKey 'logs\exploration.json'
         $savedManifest=if ([IO.File]::Exists($manifestPath)) {[IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json} else {$null}
         if ($Arguments.action -eq 'Batch' -and $savedManifest.workflowMode -eq 'Live' -and
-            @($Arguments.requests | Where-Object {$_.command -notin @('observe','select','read','read-pdf','windows','state','screenshot','wait-element','wait-file')}).Count) {
+            @($Arguments.requests | Where-Object {-not (Test-AGTAReadOnlyCommand $_.command)}).Count) {
             throw 'Live authoring requires testing the saved body. Save the template, then call agta_explore action Replay, replayAction Start with scriptPath, and replayAction Step. Use Replay Repair for live recovery; Batch is read-only discovery. Do not restart the full script.'
         }
         if ($Arguments.action -eq 'Batch' -and @($planSessions.Values | Where-Object {-not $_.closed}).Count -and
-            @($Arguments.requests | Where-Object {$_.command -notin @('observe','select','read','read-pdf','windows','state','screenshot','wait-element','wait-file')}).Count) {
+            @($Arguments.requests | Where-Object {-not (Test-AGTAReadOnlyCommand $_.command)}).Count) {
             throw 'A live plan owns this desktop route. Use agta_replay Repair for GUI input so repairs and ownership are recorded; agta_explore remains available for read-only discovery and RecordSteps.'
         }
         if (-not $EnableShortcutPolicy) {
@@ -146,7 +147,7 @@ function Invoke-McpTool($Name,$Arguments) {
             'Repair' {if (-not $session) {throw 'Start the live plan first.'};$value=@(Invoke-AGTAPlanRepair $session $Arguments.requests -StepIndex $Arguments.stepIndex)}
             'Skip' {if (-not $session) {throw 'Start the live plan first.'};$value=Skip-AGTAPlanStep $session $Arguments.reason}
             'Status' {if (-not $session) {throw 'Start the live plan first.'};$value=Get-AGTAPlanStatus $session}
-            'Close' {if (-not $session) {throw 'Start the live plan first.'};$value=Close-AGTAPlanSession $session}
+            'Close' {if (-not $session) {throw 'Start the live plan first.'};$value=Close-AGTAPlanSession $session -Reason $Arguments.reason}
             'Verify' {
                 if (@($planSessions.Values | Where-Object {-not $_.closed}).Count) {throw 'Close the live desktop session first so ownership cleanup precedes any full replay.'}
                 if ($session -and $session.qualified -and $session.definition.scriptHash -eq (Get-FileHash $session.scriptPath -Algorithm SHA256).Hash -and
@@ -180,7 +181,7 @@ function Invoke-McpTool($Name,$Arguments) {
         $value=@{ok=$true;commands=@(Get-AGTACommandDiagnostics $path -Last $last -StepIndex $Arguments.stepIndex);fullLogPath=$path}
         $responses=@(($value | ConvertTo-Json -Depth 40 -Compress))
     } elseif ($Name -eq 'agta_help') {
-        foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin @('topic','names','testCaseCsv','detail')) {throw "Unknown help argument: $property"}}
+        foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin @('topic','names','testCaseCsv','detail','runRoot','stepIndex')) {throw "Unknown help argument: $property"}}
         if ($Arguments.detail -and $Arguments.detail -notin @('signatures','full')) {throw 'Help detail must be signatures or full.'}
         if ($Arguments.topic -eq 'authoring') {
             # Get-Content strings carry provider metadata in PS5. ConvertTo-Json
@@ -190,6 +191,15 @@ function Invoke-McpTool($Name,$Arguments) {
                 interactionPolicies=$availablePolicies;shortcutPolicyEnabled=[bool]$EnableShortcutPolicy}
             if ($Arguments.testCaseCsv) {$context.steps=@(Import-Csv -LiteralPath $Arguments.testCaseCsv)}
             $responses=@(($context | ConvertTo-Json -Depth 5 -Compress))
+        } elseif ($Arguments.topic -eq 'replay') {
+            if (-not $Arguments.runRoot -or -not [IO.Path]::IsPathRooted($Arguments.runRoot)) {throw 'Replay help requires an absolute completed runRoot.'}
+            $path=Join-Path $Arguments.runRoot 'logs\replay-reference.json'
+            $reference=[IO.File]::ReadAllText($path) | ConvertFrom-Json
+            if ($Arguments.stepIndex) {
+                $reference.steps=@($reference.steps | Where-Object {$_.stepIndex -eq $Arguments.stepIndex})
+                if (-not $reference.steps.Count) {throw 'Replay reference does not contain that CSV row.'}
+            }
+            $responses=@(($reference | ConvertTo-Json -Depth 30 -Compress))
         } elseif ($Arguments.topic -in @('cli','runtime')) {
             if ($Arguments.names -isnot [array] -or $Arguments.names.Count -lt 1 -or $Arguments.names.Count -gt 20 -or @($Arguments.names | Where-Object {$_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) -or $_ -match ','}).Count) {throw 'Targeted help requires 1..20 nonempty names without commas.'}
             $names=$Arguments.names -join ','
@@ -201,7 +211,7 @@ function Invoke-McpTool($Name,$Arguments) {
                     $responses=@((ConvertTo-Json -InputObject $entries -Depth 8 -Compress))
                 }
             }
-        } else {throw 'Help topic must be authoring, cli or runtime.'}
+        } else {throw 'Help topic must be authoring, cli, runtime or replay.'}
     } else {throw "Unknown tool: $Name"}
     $failed=$LASTEXITCODE -ne 0
     if (-not $responses.Count) {throw 'Entrypoint returned no response; inspect Status/GUI before retrying.'}
@@ -261,7 +271,7 @@ while ($null -ne ($line=[Console]::ReadLine())) {
                     'initialize' {
                         if ($request.params.protocolVersion -isnot [string] -or -not $request.params.protocolVersion) {throw 'Initialize requires protocolVersion.'}
                         $version=if ($request.params.protocolVersion -in @('2024-11-05','2025-03-26','2025-06-18')) {$request.params.protocolVersion} else {'2025-06-18'}
-                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.4.0'}}
+                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.5.0'}}
                         $negotiated=$true;$ready=$false
                     }
                     'ping' {$reply.result=@{}}
