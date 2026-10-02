@@ -44,6 +44,8 @@ Targeted signatures: `agta_help` with `{"topic":"cli","names":["type","observe"]
 
 ## Timing and diagnosis
 
+Screenshot commands return PNG/JPEG pixels inline with their receipt and physical region, eliminating a separate image-view call. Up to the last two screenshots of a Batch are attached, each bounded to 10 MiB; the saved files remain authoritative. Batch includeImages false disables attachments. Inspect returned pixels directly; do not call view_image again for the same image. Unsupported formats/oversized images retain their valid receipt/path with an inline warning. Compact windows preserve actionable identity/guards/bounds while full property details stay in the command transcript.
+
 The last exploration response includes `mcpTiming.requestMs`, measuring server dispatch, CLI and receipt work. The client/tool round trip can add time outside it. Startup/import costs are paid once per server connection. Actual UI provider work, literal typing and required postcondition waits remain.
 
 Run `tests/ExplorationMcp.Tests.ps1 -OutFile <path>` for protocol, policy, receipts/failure/recovery and a sequential read-only latency comparison with fresh-shell direct invocation. It uses isolated CLI state and real receipts. It excludes agent-side MCP transport and one-time initialization; a local benchmark is not a measured full VM workflow speedup.

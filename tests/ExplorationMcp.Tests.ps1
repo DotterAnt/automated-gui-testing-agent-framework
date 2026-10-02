@@ -120,6 +120,13 @@ try {
             @{stepIndex=1;command='windows';arguments=@('-Foreground','-WindowTitle',$title,'-TimeoutMs','3000')})}
         $ready=(Values $response)[-1]
         Check (-not $response.result.isError -and $ready.data.count -eq 1) 'MCP could not establish real fixture foreground readiness.'
+        $imagePath=Join-Path $root 'inline.png'
+        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='screenshot';arguments=@('-OutFile',$imagePath,'-X','0','-Y','0','-Width','100','-Height','100')})}
+        $blocks=@($response.result.content | Where-Object {$_.type -eq 'image'})
+        Check (-not $response.result.isError -and $blocks.Count -eq 1 -and $blocks[0].mimeType -eq 'image/png' -and $blocks[0].data -ceq [Convert]::ToBase64String([IO.File]::ReadAllBytes($imagePath))) 'MCP did not return exact captured screenshot pixels with the receipt.'
+        Check ($response.result.content[1].text -match 'physical region' -and (Values $response)[0].data.path -eq $imagePath) 'Inline screenshot lost coordinate origin or its authoritative receipt.'
+        $response=Tool @{action='Batch';runRoot=$guiRun;includeImages=$false;requests=@(@{stepIndex=1;command='screenshot';arguments=@('-OutFile',$imagePath,'-X','0','-Y','0','-Width','100','-Height','100')})}
+        Check (-not $response.result.isError -and $response.result.content.Count -eq 1) 'Text-only screenshot option still returned image data.'
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='windows';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title,'-WaitForNotExists','-TimeoutMs','0')})}
         Check ($response.result.isError -and -not (Values $response)[0].data.conditionMet -and -not (Values $response)[0].verification.eligible) 'A real open window passed MCP disappearance evidence.'
         Tool @{action='Status';runRoot=$guiRun} | Out-Null

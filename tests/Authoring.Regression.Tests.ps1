@@ -106,6 +106,13 @@ try {
         Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) "GUI bypass survived: $code"
     }
     # Existing testdata and read-only assertions remain legal.
+    foreach ($constant in @('$true','($true)','(($TRUE))')) {
+        ('Assert-ExpectedResult -Condition '+$constant+' -Message "Rotated preview"') | Set-Content $scriptPath
+        $audit=Test-AGTAGeneratedScript $scriptPath -PolicyOnly
+        Check (-not $audit.ok -and ($audit.issues -join ' ') -match 'always passes') 'An unconditional passing assertion survived runtime preflight.'
+    }
+    'Assert-ExpectedResult -Condition:$true -Message "Preview"' | Set-Content $scriptPath
+    Check (-not (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok) 'Inline unconditional passing assertion survived.'
     'Assert-ExpectedResult -Condition ($text -eq "Test") -Message "Persisted text"' | Set-Content $scriptPath
     Check (Test-AGTAGeneratedScript $scriptPath -PolicyOnly).ok 'Read-only content assertion was blocked.'
     'Get-CimInstance -ClassName Win32_Printer | Select-Object Name,Default' | Set-Content $scriptPath

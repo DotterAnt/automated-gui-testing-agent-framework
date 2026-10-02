@@ -17,7 +17,8 @@ $tools=@(
             action=@{type='string';enum=@('Begin','Batch','RecordSteps','Status','Complete')};runRoot=@{type='string'};
             testCaseCsv=@{type='string'};potatoCliPath=@{type='string'};
             interactionPolicy=@{type='string';enum=$availablePolicies};policyReason=@{type='string';description='Records existing user/testcase authorization, never an agent justification. Does not enable shortcut capability.'};
-            requests=@{type='array';items=@{type='object'};description='Batch: {stepIndex,command,arguments:[]} objects. RecordSteps: {stepIndex,route,observedResult,verificationCommandIds:[]} objects. Structured *Json argument values are supported.'}
+            requests=@{type='array';items=@{type='object'};description='Batch: {stepIndex,command,arguments:[]} objects. RecordSteps: {stepIndex,route,observedResult,verificationCommandIds:[]} objects. Structured *Json argument values are supported.'};
+            includeImages=@{type='boolean';description='Batch screenshots return their original PNG/JPEG pixels inline by default (last two, <=10 MiB each), alongside receipt/physical region. Inspect these directly without another file-view call. Set false for text-only receipts.'}
         }}}
     @{name='agta_help';description='Read the authoring guide/template once, or targeted CLI/runtime signatures. Use topic authoring first; cli/runtime require observed missing names. Full command receipts and results remain on disk.';
         inputSchema=@{type='object';required=@('topic');additionalProperties=$false;properties=@{
@@ -29,8 +30,9 @@ function Invoke-McpTool($Name,$Arguments) {
     if (-not $Arguments -or $Arguments -is [array] -or $Arguments -isnot [pscustomobject]) {throw 'Tool arguments must be an object.'}
     $global:LASTEXITCODE=0
     if ($Name -eq 'agta_explore') {
-        $allowed=@('action','runRoot','testCaseCsv','potatoCliPath','interactionPolicy','policyReason','requests')
+        $allowed=@('action','runRoot','testCaseCsv','potatoCliPath','interactionPolicy','policyReason','requests','includeImages')
         foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin $allowed) {throw "Unknown exploration argument: $property"}}
+        if ($Arguments.PSObject.Properties.Name -contains 'includeImages' -and ($Arguments.action -ne 'Batch' -or $Arguments.includeImages -isnot [bool])) {throw 'includeImages is a Boolean option for Batch only.'}
         if ($Arguments.action -cnotin @('Begin','Batch','RecordSteps','Status','Complete') -or -not $Arguments.runRoot -or -not [IO.Path]::IsPathRooted($Arguments.runRoot)) {throw 'Use a supported action and an absolute runRoot.'}
         $runKey=[IO.Path]::GetFullPath($Arguments.runRoot)
         if (-not $EnableShortcutPolicy) {
@@ -81,10 +83,30 @@ function Invoke-McpTool($Name,$Arguments) {
         if ($Name -eq 'agta_explore' -and $Arguments.action -eq 'Batch' -and $failed -and $final.workflow) {
             $final.workflow.nextAction='Call agta_explore with action Status on this runRoot, inspect the failed receipt and actual GUI, then submit one observed recovery Batch. Do not repeat uncertain input or skip unfinished rows.'
         }
-        $final | Add-Member -NotePropertyName mcpTiming -NotePropertyValue @{requestMs=[Math]::Round($watch.Elapsed.TotalMilliseconds,2)} -Force
         $responses[$last]=$final | ConvertTo-Json -Depth 80 -Compress
     }
-    @{content=@(@{type='text';text=$responses -join "`n"});isError=$failed}
+    $content=@(@{type='text';text=$responses -join "`n"})
+    if ($Name -eq 'agta_explore' -and $Arguments.action -eq 'Batch' -and $Arguments.includeImages -ne $false) {
+        $screens=@($responses | ForEach-Object {$_ | ConvertFrom-Json} | Where-Object {$_.command -eq 'screenshot' -and $_.ok} | Select-Object -Last 2)
+        foreach ($screen in $screens) {
+            try {
+                $path=[string]$screen.data.path
+                $file=Get-Item -LiteralPath $path -ErrorAction Stop
+                if ($file.Length -gt 10485760) {throw 'Screenshot exceeds the inline 10 MiB bound; inspect its saved file.'}
+                $mime=switch ([string]$screen.data.format) {'PNG' {'image/png'};'JPEG' {'image/jpeg'};'JPG' {'image/jpeg'};default {throw 'Inline screenshots support PNG/JPEG; inspect the saved file.'}}
+                $bytes=[IO.File]::ReadAllBytes($file.FullName)
+                if ($bytes.Length -gt 10485760) {throw 'Screenshot grew beyond the inline bound.'}
+                $content+=@{type='text';text=('Screenshot receipt '+$screen.explorationCommandId+'; physical region '+($screen.data.region | ConvertTo-Json -Compress)+'. Original pixels; use region origin for coordinates.')}
+                $content+=@{type='image';mimeType=$mime;data=[Convert]::ToBase64String($bytes)}
+            } catch {$content+=@{type='text';text=('Inline screenshot unavailable: '+$_.Exception.Message+' Receipt/file remain valid.')}}
+        }
+    }
+    if ($final -is [pscustomobject]) {
+        $final | Add-Member -NotePropertyName mcpTiming -NotePropertyValue @{requestMs=[Math]::Round($watch.Elapsed.TotalMilliseconds,2)} -Force
+        $responses[$last]=$final | ConvertTo-Json -Depth 80 -Compress
+        $content[0].text=$responses -join "`n"
+    }
+    @{content=$content;isError=$failed}
 }
 # MCP stdio: exactly one JSON-RPC response per input line; no banners or logs on
 # stdout. CLI work stays in this process and uses the authoritative entrypoint.
@@ -106,7 +128,7 @@ while ($null -ne ($line=[Console]::ReadLine())) {
                     'initialize' {
                         if ($request.params.protocolVersion -isnot [string] -or -not $request.params.protocolVersion) {throw 'Initialize requires protocolVersion.'}
                         $version=if ($request.params.protocolVersion -in @('2024-11-05','2025-03-26','2025-06-18')) {$request.params.protocolVersion} else {'2025-06-18'}
-                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.0.2'}}
+                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.0.3'}}
                         $negotiated=$true;$ready=$false
                     }
                     'ping' {$reply.result=@{}}

@@ -46,6 +46,9 @@ $StepBodies = @(
     #     Assert-PotatoOk $started
     #     $ready = Invoke-StepCommand -Commands $Commands -Command wait-element -Arguments @('-Name','<observed control>','-TimeoutMs','10000')
     #     Assert-PotatoFound $ready -Message '<CSV expected result>'
+    #     # Evidence: Add-EvidencePath -Evidence $Evidence -Path $ScreenshotPath
+    #     # Content: Assert-ExpectedResult -Condition <actual Boolean> -Message '<expectation>'
+    #     # Absence: Assert-ExpectedResult -Condition $closedWindows.data.conditionMet -Message '<closed>'
     # }
     # Add each remaining row with its tested GUI route and expected-result assertion.
 )

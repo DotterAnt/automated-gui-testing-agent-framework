@@ -8,6 +8,14 @@ $script:checks=0
 function Check($condition,$message) {if (-not $condition) {throw $message};$script:checks++}
 function Reject([scriptblock]$body,$message) {$failure=$null;try {& $body | Out-Null} catch {$failure=$_};Check ([bool]$failure) $message;return $failure}
 try {
+    $window=@{name='Fixture';className='FixtureClass';processId=42;processName='FixtureHost';nativeWindowHandle=123;
+        controlType='Window';isEnabled=$true;isOffscreen=$false;boundingRectangle=@{x=0;y=0;width=100;height=100};supportedPatterns=@('Window');
+        automationId='';localizedControlType='window';hasKeyboardFocus=$false;isKeyboardFocusable=$true;boundsStatus='valid';isModal=$false;propertyErrors=@()}
+    $windows=@{count=1;windows=@($window);checkpointId='baseline';foregroundSelector=@{Name='Fixture';ClassName='FixtureClass';ProcessId=42};conditionMet=$true}
+    $small=ConvertTo-AGTACompactWindowData $windows
+    Check ($small.windows[0].nativeWindowHandle -eq 123 -and $small.windows[0].supportedPatterns[0] -eq 'Window' -and $small.foregroundSelector.Name -eq 'Fixture' -and $small.checkpointId -eq 'baseline' -and $small.conditionMet) 'Compact windows lost handoff/guard/transition information.'
+    Check (($small | ConvertTo-Json -Depth 8 -Compress).Length -lt 0.8*($windows | ConvertTo-Json -Depth 8 -Compress).Length) 'Compact windows repeated unused property boilerplate.'
+    Check ($window.Contains('hasKeyboardFocus') -and -not $small.Contains('Keys')) 'Compact adapter mutated full receipts or emitted dictionary metadata.'
     $absent=@{command='windows';result=@{ok=$true;data=@{count=0;waitForNotExists=$true;conditionMet=$true}}}
     Check (Get-AGTAExplorationVerificationInfo $absent).eligible 'Explicit confirmed window absence was rejected as row evidence.'
     Check (Test-AGTAExplorationCommandSucceeded $absent.result windows) 'Confirmed disappearance failed batch success validation.'

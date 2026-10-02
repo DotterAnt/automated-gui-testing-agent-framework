@@ -39,7 +39,9 @@ function Write-Response($Result, [int]$ActiveStep=0, [string]$ActiveCommand, [bo
     }
     if ($OutputMode -eq 'Compact' -and $Result.explorationCommandId) {
         # Complete command results remain in the transcript; never truncate readback.
-        $Result=[ordered]@{ok=$Result.ok;command=$Result.command;data=$Result.data;error=$Result.error;
+        $data=$Result.data
+        if ($Result.command -eq 'windows' -and $data) {$data=ConvertTo-AGTACompactWindowData $data}
+        $Result=[ordered]@{ok=$Result.ok;command=$Result.command;data=$data;error=$Result.error;
             outcome=$Result.outcome;durationMs=$Result.durationMs;totalDurationMs=$Result.totalDurationMs;
             explorationCommandId=$Result.explorationCommandId;verification=$Result.verification}
         if ($workflow) {$Result.workflow=$workflow}

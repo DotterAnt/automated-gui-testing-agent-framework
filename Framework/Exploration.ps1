@@ -1,4 +1,22 @@
 # Evidence-backed authoring checkpoint. This is an audit trail, not a sandbox.
+function ConvertTo-AGTACompactWindowData {
+    param($Data)
+    $result=[ordered]@{}
+    if ($Data -is [Collections.IDictionary]) {foreach ($key in $Data.Keys) {$result[$key]=$Data[$key]}}
+    else {foreach ($property in $Data.PSObject.Properties) {$result[$property.Name]=$property.Value}}
+    $result.windows=@(foreach ($window in $Data.windows) {
+        $item=[ordered]@{}
+        foreach ($key in @('name','className','processId','processName','nativeWindowHandle','controlType','isEnabled','isOffscreen','boundingRectangle','supportedPatterns')) {
+            $item[$key]=$window.$key
+        }
+        if ($window.automationId) {$item.automationId=$window.automationId}
+        if ($window.isModal) {$item.isModal=$true}
+        if (@($window.propertyErrors).Count) {$item.propertyErrors=$window.propertyErrors}
+        $item
+    })
+    return $result
+}
+
 function Resolve-AGTACommandArguments {
     param([string]$Command,[object[]]$Arguments=@(),[string]$InteractionPolicy)
     $values=@(for ($i=0;$i -lt $Arguments.Count;$i++) {

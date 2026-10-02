@@ -1099,3 +1099,4 @@ Export-ModuleMember -Function `
     Invoke-AGTAAgentTool, `
     Get-AGTAOpenAITools
 Export-ModuleMember -Function Resolve-AGTACommandArguments, Get-AGTAExplorationPaths, Initialize-AGTAExploration, Add-AGTAExplorationCommand, Complete-AGTAExplorationStep, Complete-AGTAExploration, Test-AGTAExploration, Test-AGTAExplorationCommandSucceeded, Get-AGTAExplorationStatus, Get-AGTAExplorationVerificationInfo, Get-AGTAExplorationWorkflow
+Export-ModuleMember -Function ConvertTo-AGTACompactWindowData

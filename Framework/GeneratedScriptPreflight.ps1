@@ -38,6 +38,9 @@ function Get-AGTARuntimeHelp {
                 Assert-TextContains {'Result must be a successful CLI read/read-pdf envelope with content provenance. For archive entries use Assert-ZipTextContains; plain strings and {name,text} objects are not CLI results.'}
                 Assert-ImageContainsColors {'Read-only shared decode and compiled pixel scan, bounded by MaxBytes/MaxPixels. ColorRanges objects: name,rMin,rMax,gMin,gMax,bMin,bMax,aMin (RGB defaults 0..255, aMin defaults 1). Each needs MinimumPixels. ExpectedFormat checks actual signature/decoded format, not extension. PassThru returns counts/dimensions. Color presence alone does not prove shape, layout, record count or correct GUI creation.'}
                 Invoke-StepCommand {'*Json option values may be strings or objects; objects are serialized before CLI invocation.'}
+                Add-EvidencePath {'Pass the current row reference: -Evidence $Evidence -Path <saved evidence>. Merely saving/adding a screenshot does not assert its contents.'}
+                Assert-ExpectedResult {'Condition must be a Boolean measured from actual state/content. Literal $true is rejected by preflight. Dispatch, filenames, image dimensions or a PDF header alone do not prove all content expectations.'}
+                Assert-PotatoFound {'Asserts existence/count/exists, not absence. For windows -WaitForNotExists assert data.conditionMet using Assert-ExpectedResult.'}
                 default {$null}
             }
         }
@@ -109,6 +112,16 @@ function Test-AGTAGeneratedScript {
     foreach ($call in @($ast.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst]}, $true))) {
         $name = $call.GetCommandName()
         $parts=@($call.CommandElements)
+        if ($name -eq 'Assert-ExpectedResult' -and -not $localFunctions.ContainsKey($name)) {
+            for ($i=1;$i -lt $parts.Count;$i++) {
+                if ($parts[$i] -isnot [Management.Automation.Language.CommandParameterAst] -or $parts[$i].ParameterName -ne 'Condition') {continue}
+                $condition=$parts[$i].Argument
+                if (-not $condition -and $i+1 -lt $parts.Count) {$condition=$parts[$i+1]}
+                if ($condition -and $condition.Extent.Text -match '^\s*\(*\s*\$true\s*\)*\s*$') {
+                    $issues+="Line $($condition.Extent.StartLineNumber): Assert-ExpectedResult -Condition `$true always passes and cannot verify a GUI result. Assert actual readback/content or a measured postcondition; a saved screenshot alone is evidence, not an automated assertion."
+                }
+            }
+        }
         for ($i=1;$i -lt $parts.Count;$i++) {
             if ($parts[$i] -isnot [Management.Automation.Language.CommandParameterAst]) {continue}
             $value=$parts[$i].Argument
