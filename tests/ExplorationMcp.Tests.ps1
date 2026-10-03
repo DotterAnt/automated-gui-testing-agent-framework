@@ -1,4 +1,4 @@
-param([string]$OutFile,[ValidateRange(3,20)] [int]$Count=6,[switch]$Gui)
+param([string]$OutFile,[ValidateRange(3,20)] [int]$Count=6,[switch]$Gui,[switch]$DirectHost)
 $ErrorActionPreference='Stop'
 [Console]::InputEncoding=[Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
@@ -32,6 +32,7 @@ try {
     $cli=Join-Path $cliRoot 'potato.ps1'
     $info=[Diagnostics.ProcessStartInfo]::new()
     $info.FileName='powershell.exe';$info.Arguments='-NoProfile -ExecutionPolicy Bypass -File "'+(Join-Path $frameworkRoot 'Invoke-ExplorationMcp.ps1')+'"'
+    if ($DirectHost) {$info.Arguments=$info.Arguments.Replace('-NoProfile','-NoProfile -NonInteractive')}
     $info.UseShellExecute=$false;$info.CreateNoWindow=$true
     $info.RedirectStandardInput=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
     $info.StandardOutputEncoding=[Text.Encoding]::UTF8
@@ -41,7 +42,7 @@ try {
     $legacy=Rpc initialize @{protocolVersion='2024-11-05';capabilities=@{};clientInfo=@{name='fixture';version='1'}}
     Check ($legacy.result.protocolVersion -eq '2024-11-05') 'MCP rejected the older supported protocol.'
     $hello=Rpc initialize @{protocolVersion='2025-06-18';capabilities=@{};clientInfo=@{name='fixture';version='1'}}
-    Check ($hello.result.protocolVersion -eq '2025-06-18' -and $hello.result.capabilities.tools) 'MCP handshake failed.'
+    Check ($hello.result.protocolVersion -eq '2025-06-18' -and $hello.result.capabilities.tools -and $hello.result.serverInfo.version -eq '1.7.0') 'MCP handshake failed or loaded an old server.'
     $server.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}');$server.StandardInput.Flush()
     $list=Rpc 'tools/list' @{}
     Check ($list.result.tools.Count -eq 5 -and $list.result.tools[0].inputSchema.required -contains 'runRoot') 'Tool discovery lost input schemas.'
@@ -219,6 +220,37 @@ exit (Get-AGTATestExitCode)
     $bad=(Values $badStart)[0]
     Check ($badStart.result.isError -and $bad.error -match 'Path.*null' -and ($bad.location.stack -join ' ') -match [regex]::Escape($badPath)) 'MCP setup failure did not identify the saved script location.'
     Check ($bad.location.stack.Count -le 3 -and $bad.location.command.Length -le 243) 'MCP setup failure emitted unbounded diagnostic scaffolding.'
+    # Reproduce a missing mandatory parameter in saved code. Legacy console
+    # hosts prompt here and consume the NEXT JSON-RPC request as that argument.
+    $promptRun=Join-Path $root 'prompt-plan'
+    Tool @{action='Begin';runRoot=$promptRun;testCaseCsv=$csv;potatoCliPath=$cli;workflowMode='Live'} | Out-Null
+    $promptPath=Join-Path $root 'prompt-plan.ps1'
+    $promptSource=$templatePrefix+@'
+function Invoke-FixtureRequiredArgument {
+    param([Parameter(Mandatory)] [string]$Value)
+}
+$StepBodies=@({param([ref]$Commands,[ref]$Evidence)
+    Invoke-FixtureRequiredArgument
+    $State.calls++
+    Invoke-StepCommand $Commands state @() | Assert-PotatoOk
+    Assert-ExpectedResult ($State.calls -eq 1) 'The same row reached its measured fixture postcondition'
+})
+Invoke-AGTATestPlan -StepBodies $StepBodies -OutputMode $OutputMode
+exit (Get-AGTATestExitCode)
+'@
+    $promptSource | Set-Content $promptPath
+    Tool @{action='Replay';replayAction='Start';runRoot=$promptRun;scriptPath=$promptPath;includeImages=$false} | Out-Null
+    $promptWatch=[Diagnostics.Stopwatch]::StartNew()
+    $promptFailure=Tool @{action='Replay';replayAction='Step';runRoot=$promptRun;includeImages=$false}
+    $promptFailureMs=$promptWatch.ElapsedMilliseconds
+    Check ($promptFailure.result.isError -and (Values $promptFailure)[0].status -eq 'DIAGNOSTIC_FAILURE' -and (Values $promptFailure)[0].error -match 'NonInteractive|missing mandatory parameters' -and $promptFailureMs -lt 10000) ('Saved code did not fail promptly for a missing argument: '+($promptFailure | ConvertTo-Json -Depth 8 -Compress))
+    $promptStatus=Tool @{action='Replay';replayAction='Status';runRoot=$promptRun;includeImages=$false}
+    Check (-not $promptStatus.result.isError -and (Values $promptStatus)[0].nextStepIndex -eq 1) 'A mandatory-argument prompt consumed the following Status request.'
+    $promptSource.Replace('[Parameter(Mandatory)] [string]$Value',"[string]`$Value='fixture'") | Set-Content $promptPath
+    $promptRecovery=Tool @{action='Replay';replayAction='Step';runRoot=$promptRun;includeImages=$false}
+    Check (-not $promptRecovery.result.isError -and (Values $promptRecovery)[0].status -eq 'RECOVERY_SUCCESS') 'Pipeline assertion or same-session helper repair failed after a missing argument.'
+    $promptClose=Tool @{action='Replay';replayAction='Close';runRoot=$promptRun;includeImages=$false}
+    Check (-not (Values $promptClose)[0].qualifying) 'An argument repair was published as a first-attempt full success.'
     $rowCsv=Join-Path $root 'repair-rows.csv'
     'Action,Data,Expected Result','First,,Fixture','Second,,Fixture' | Set-Content $rowCsv
     $rowRun=Join-Path $root 'repair-rows'
@@ -306,7 +338,7 @@ Export-ModuleMember -Function Invoke-PotatoCliCommand
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
             @{stepIndex=1;command='focus';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title)},
             @{stepIndex=1;command='focus';arguments=@('-SinceCheckpoint',@{resultRef='notEarlier';path='data.checkpointId'})})}
-        Check ($response.result.isError -and (Values $response).Count -eq 1 -and (Values $response)[0].error -match 'resultRef') 'Invalid later binding dispatched the earlier focus instead of rejecting the whole batch.'
+        Check ($response.result.isError -and @(Values $response).Count -eq 1 -and (Values $response)[0].error -match 'resultRef') ('Invalid later binding was not rejected before dispatch: '+($response | ConvertTo-Json -Depth 8 -Compress))
         Tool @{action='Status';runRoot=$guiRun} | Out-Null
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='click';arguments=@('-Name','Fixture filename','-Method','Mouse')})}
         Check (-not $response.result.isError) 'The handoff fixture did not restore its filename focus for the following typing checks.'
@@ -466,8 +498,18 @@ exit (Get-AGTATestExitCode)
     Check ($response.result.isError -and (Values $response)[0].error -match 'authorization') 'Operator capability removed the per-run authorization record.'
     $response=Tool @{action='Begin';runRoot=(Join-Path $root 'operator-authorized');testCaseCsv=$csv;potatoCliPath=$cli;interactionPolicy='AllowShortcuts';policyReason='Explicit user authorization fixture'}
     Check (-not $response.result.isError -and (Values $response)[0].ok) 'Operator capability plus recorded authorization failed.'
-    $server.StandardInput.Close();Check ($server.WaitForExit(5000) -and $server.ExitCode -eq 0) 'Opt-in MCP server did not close on EOF.'
-    $result=@{checks=$script:checks;gui=[bool]$Gui;guiDisappearanceMs=$(if ($Gui) {$gone.durationMs});samples=$samples;serverProcessId=$primaryServerId;powershell=$PSVersionTable.PSVersion.ToString();
+    # Abrupt parent termination must not leave the compatibility host/provider
+    # alive with inherited protocol pipes held open.
+    $operatorRoot=Join-Path $root 'operator-authorized'
+    Tool @{action='Batch';runRoot=$operatorRoot;requests=@(@{stepIndex=1;command='state';arguments=@()})} | Out-Null
+    $operatorProgress=Rpc 'tools/call' @{name='agta_inspect';arguments=@{runRoot=$operatorRoot;source='exploration'}}
+    $operatorProvider=(Values $operatorProgress)[0].providerProgress.providerPid
+    $server.Kill();[void]$server.WaitForExit(3000)
+    $orphanWatch=[Diagnostics.Stopwatch]::StartNew()
+    while ((Get-Process -Id $operatorProvider -ErrorAction SilentlyContinue) -and $orphanWatch.ElapsedMilliseconds -lt 5000) {Start-Sleep -Milliseconds 50}
+    Check (-not (Get-Process -Id $operatorProvider -ErrorAction SilentlyContinue)) 'An abruptly terminated MCP parent left its host/provider running.'
+    Check ($server.StandardOutput.ReadToEndAsync().Wait(3000)) 'An orphan compatibility host retained protocol stdout after its parent exited.'
+    $result=@{checks=$script:checks;gui=[bool]$Gui;directHost=[bool]$DirectHost;promptFailureMs=$promptFailureMs;guiDisappearanceMs=$(if ($Gui) {$gone.durationMs});samples=$samples;serverProcessId=$primaryServerId;powershell=$PSVersionTable.PSVersion.ToString();
         note='Sequential real read-only state receipts. MCP uses one persistent PS5 process; FreshShellDirect creates a NoProfile PS5 caller and reuses the Auto worker. Excludes external agent/tool transport and one-time initialization.'}
     if ($OutFile) {$result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $OutFile -Encoding UTF8}
     $result | ConvertTo-Json -Depth 6 -Compress

@@ -13,6 +13,8 @@ Read this guide, template and supplied CSV once through `agta_help` topic `autho
 
 Replay is also available as `agta_explore` action `Replay`, with `replayAction` Start/Step/Status/Repair/Skip/Close/Verify. Both names reach the same session. Bodies and top-level helper functions reload without resetting variables, paths or ownership. Initializer/parameter/import changes require Close/Start because those statements cannot safely be re-executed over live state. Helper edits after execution taint qualification; the final clean revision must be verified.
 
+Receipt assertions accept direct Result arguments or pipelines: `Invoke-StepCommand $Commands wait-element <tested arguments> | Assert-PotatoFound`. Assert-PotatoOk checks dispatch/verification success; Assert-PotatoFound needs existence/count/element evidence and cannot validate an observe receipt. Assert actual content separately. Assertion/helper edits reload live and are not a reason to abandon an unfinished failed row or rerun successful prefixes.
+
 Use `workflowMode: "Live"` only when intentionally developing saved bodies during discovery. It requires a saved template before input, makes Batch read-only, and permits unchanged first-attempt qualification on Close. Recorded exploration is the normal default. Detailed recovery rules: `docs/LIVE_REPLAY.md`, only when needed. Use `agta_inspect` instead of raw JSONL dumps; full evidence remains on disk.
 
 Without MCP, use recorded shell Batch exploration, RecordSteps, cleanup, Complete, the compact replay reference and template. Preserve tested arguments/fresh identities. Do not load full discovery history. Invoke shell entrypoints directly, without nested powershell.exe or OutputEncoding boilerplate:

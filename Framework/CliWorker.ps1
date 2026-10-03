@@ -30,7 +30,7 @@ function Invoke-AGTAIsolatedCliCommand {
         $entry=Join-Path (Split-Path $PSScriptRoot) 'Invoke-CliWorker.ps1'
         $info=[Diagnostics.ProcessStartInfo]::new()
         $info.FileName='powershell.exe'
-        $info.Arguments='-NoProfile -ExecutionPolicy Bypass -File "'+$entry+'" -ParentId '+$PID
+        $info.Arguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$entry+'" -ParentId '+$PID
         $info.UseShellExecute=$false;$info.CreateNoWindow=$true
         $info.RedirectStandardInput=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
         $info.StandardOutputEncoding=[Text.Encoding]::UTF8

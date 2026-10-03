@@ -267,6 +267,11 @@ function Close-AGTAPlanSession {
     if ($unfinishedFailure -and -not $setupChanged -and [string]::IsNullOrWhiteSpace($Reason)) {
         throw 'Recovery is unfinished; Close would discard the retained state and repeat successful rows. Call Status, edit bodies/helpers, Repair the failed action, finish this row live, Skip with a reason, and continue Step. Retry Step only after restoring row entry state. Close normally after the last row. To abandon an unrecoverable/cancelled session and clean owned windows, Close with an explicit reason; abandonment remains diagnostic.'
     }
+    $lastFailed=@($Session.attempts | Where-Object {$_.status -eq 'DIAGNOSTIC_FAILURE'} | Select-Object -Last 1)
+    if ($unfinishedFailure -and -not $setupChanged -and $lastFailed.Count -and
+        $lastFailed[0].scriptHash -ne $Session.definition.scriptHash -and $Reason -notmatch '(?i)cancel|unrecoverable') {
+        throw 'The saved body/helper changed after failure and can reload in this live session. An edit is not an abandonment reason. Status, Repair/finish the pending row, then Skip and continue Step; retry its body only after restoring entry state. Do not discard successful prefixes for a clean verification before diagnostic continuation reaches the end. Cancellation or genuinely unrecoverable state must be stated explicitly in the Close reason.'
+    }
     if ($unfinishedFailure) {
         $Session.tainted=$true
         $Session.repairs+=,@{status='ABANDONED';countsAsSuccessfulStep=$false;stepIndex=$Session.nextStepIndex;

@@ -36,7 +36,7 @@ function Invoke-AGTAExplorationHost {
             if (-not $pipe) {
                 $worker=Join-Path (Split-Path $PSScriptRoot) 'Invoke-ExplorationHost.ps1'
                 $token=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($RunRoot))
-                $child=Start-Process powershell.exe -WindowStyle Hidden -WorkingDirectory (Split-Path $PSScriptRoot) -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$worker+'"'),'-RunRootToken',$token,'-IdleSeconds',"$IdleSeconds")
+                $child=Start-Process powershell.exe -WindowStyle Hidden -WorkingDirectory (Split-Path $PSScriptRoot) -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"'+$worker+'"'),'-RunRootToken',$token,'-IdleSeconds',"$IdleSeconds")
                 $hostStarted=$true
                 try {$pipe=Connect-AGTAExplorationPipe $name 10000}
                 catch {if (-not $child.HasExited) {Stop-Process -Id $child.Id -ErrorAction SilentlyContinue};throw 'Exploration host did not start. No request was sent; use Transport InProcess to diagnose.'}

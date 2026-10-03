@@ -175,7 +175,7 @@ function Invoke-PotatoJson {
             else {$parsed = & $context.CliModule { param($cmd,$values,$root) Invoke-PotatoCliCommand -Command $cmd -Arguments $values -CliRoot $root -AsObject } $Command $effectiveArgs (Split-Path -Parent $context.PotatoCliPath)}
         }
         else {
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $context.PotatoCliPath $Command @effectiveArgs 2>&1 | ForEach-Object { $raw += $_ }
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $context.PotatoCliPath $Command @effectiveArgs 2>&1 | ForEach-Object { $raw += $_ }
             $exitCode = $LASTEXITCODE
             $parsed = ConvertFrom-PotatoOutput -RawOutput (@($raw) -join [Environment]::NewLine)
             if ($exitCode -ne 0 -and $parsed.ok) { throw "Process status disagrees with successful JSON: $exitCode" }
@@ -296,22 +296,24 @@ function Invoke-StepClick {
 function Assert-PotatoOk {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
+        [Parameter(Mandatory,ValueFromPipeline)]
         [object] $Result,
 
         [string] $Message = 'PoTATo command failed.'
     )
 
-    if ($Result.data.visualWait -and -not $Result.data.visualWait.conditionMet) {
-        if ($Result.data.visualWait.mode -eq 'ExpectedImage') {
-            $wait=$Result.data.visualWait
-            throw "$Message Expected image did not match before the deadline. Mean RGB error $($wait.meanError), worst tile $($wait.maxTileError), aspect error $($wait.aspectError). Inspect the retained screenshot/region/orientation; do not repeat input or weaken tolerances."
+    process {
+        if ($Result.data.visualWait -and -not $Result.data.visualWait.conditionMet) {
+            if ($Result.data.visualWait.mode -eq 'ExpectedImage') {
+                $wait=$Result.data.visualWait
+                throw "$Message Expected image did not match before the deadline. Mean RGB error $($wait.meanError), worst tile $($wait.maxTileError), aspect error $($wait.aspectError). Inspect the retained screenshot/region/orientation; do not repeat input or weaken tolerances."
+            }
+            throw "$Message Visual transition did not occur/settle; inspect the retained screenshot before further input."
         }
-        throw "$Message Visual transition did not occur/settle; inspect the retained screenshot before further input."
-    }
-    if (-not [bool]$Result.ok -or ($Result.data.verificationPerformed -and $Result.data.verified -eq $false)) {
-        $detail = if ($Result.error) { $Result.error.message } else { 'No error detail returned.' }
-        throw "$Message $detail"
+        if (-not [bool]$Result.ok -or ($Result.data.verificationPerformed -and $Result.data.verified -eq $false)) {
+            $detail = if ($Result.error) { $Result.error.message } else { 'No error detail returned.' }
+            throw "$Message $detail"
+        }
     }
 }
 
@@ -333,20 +335,22 @@ function Test-PotatoFound {
 function Assert-PotatoFound {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
+        [Parameter(Mandatory,ValueFromPipeline)]
         [object] $Result,
 
         [string] $Message = 'Expected GUI element was not found.'
     )
 
-    Assert-PotatoOk -Result $Result -Message $Message
-    Assert-ExpectedResult -Condition (Test-PotatoFound -Result $Result) -Message $Message
+    process {
+        Assert-PotatoOk -Result $Result -Message $Message
+        Assert-ExpectedResult -Condition (Test-PotatoFound -Result $Result) -Message $Message
+    }
 }
 
 function Assert-FileWait {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
+        [Parameter(Mandatory,ValueFromPipeline)]
         [object] $Result,
 
         [string] $Path,
@@ -355,19 +359,21 @@ function Assert-FileWait {
         [switch] $AllowExisting
     )
 
-    $targetPath = if ($Path) { $Path } elseif ($Result.data.path) { [string]$Result.data.path } else { '<unknown path>' }
-    $failureMessage = if ($Message) { $Message } else { "File condition must be met: $targetPath" }
-    Assert-PotatoOk -Result $Result -Message $failureMessage
-    $conditionMet = $false
-    if ($null -ne $Result.data.conditionMet) { $conditionMet = [bool]$Result.data.conditionMet }
-    elseif ($null -ne $Result.data.exists) { $conditionMet = [bool]$Result.data.exists }
-    Assert-ExpectedResult -Condition $conditionMet -Message $failureMessage
-    if ($Result.command -eq 'wait-file' -and $Result.data.lastWriteTimeUtc -and -not $Result.data.waitForNotExists -and -not $AllowExisting) {
-        $modified=[DateTimeOffset]::Parse($Result.data.lastWriteTimeUtc,[Globalization.CultureInfo]::InvariantCulture)
-        $started=(Get-AGTAGeneratedTestContext).StartedAt.ToUniversalTime()
-        $fresh=$modified.UtcDateTime -ge $started
-        if ($Result.data.creationTimeUtc) {$fresh=$fresh -or [DateTimeOffset]::Parse($Result.data.creationTimeUtc,[Globalization.CultureInfo]::InvariantCulture).UtcDateTime -ge $started}
-        Assert-ExpectedResult -Condition $fresh -Message "$failureMessage The file predates this execution; an old output cannot prove this Save/Print succeeded. Use a fresh execution path, or AllowExisting only when the CSV explicitly checks an existing input."
+    process {
+        $targetPath = if ($Path) { $Path } elseif ($Result.data.path) { [string]$Result.data.path } else { '<unknown path>' }
+        $failureMessage = if ($Message) { $Message } else { "File condition must be met: $targetPath" }
+        Assert-PotatoOk -Result $Result -Message $failureMessage
+        $conditionMet = $false
+        if ($null -ne $Result.data.conditionMet) { $conditionMet = [bool]$Result.data.conditionMet }
+        elseif ($null -ne $Result.data.exists) { $conditionMet = [bool]$Result.data.exists }
+        Assert-ExpectedResult -Condition $conditionMet -Message $failureMessage
+        if ($Result.command -eq 'wait-file' -and $Result.data.lastWriteTimeUtc -and -not $Result.data.waitForNotExists -and -not $AllowExisting) {
+            $modified=[DateTimeOffset]::Parse($Result.data.lastWriteTimeUtc,[Globalization.CultureInfo]::InvariantCulture)
+            $started=(Get-AGTAGeneratedTestContext).StartedAt.ToUniversalTime()
+            $fresh=$modified.UtcDateTime -ge $started
+            if ($Result.data.creationTimeUtc) {$fresh=$fresh -or [DateTimeOffset]::Parse($Result.data.creationTimeUtc,[Globalization.CultureInfo]::InvariantCulture).UtcDateTime -ge $started}
+            Assert-ExpectedResult -Condition $fresh -Message "$failureMessage The file predates this execution; an old output cannot prove this Save/Print succeeded. Use a fresh execution path, or AllowExisting only when the CSV explicitly checks an existing input."
+        }
     }
 }
 

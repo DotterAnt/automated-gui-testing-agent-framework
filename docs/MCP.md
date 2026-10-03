@@ -1,17 +1,17 @@
 # Persistent exploration tools
 
-`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell. It exposes `agta_explore`, `agta_replay`, `agta_inspect`, `agta_help` and read-only `agta_validate`. Version 1.6.0 adds batch result references, bounded retained CLI workers and replay progress between rows. Recorded exploration remains the default; replay helpers reload without restarting setup. Failed Verify retains live state; unchanged first-attempt success qualifies without repetition. Reconnect after updating. CSV/policy, receipt and assertion checks apply; no app-specific routes or extra packages are needed.
+`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell. It exposes `agta_explore`, `agta_replay`, `agta_inspect`, `agta_help` and read-only `agta_validate`. Version 1.7.0 supports piped receipt assertions and enforces noninteractive protocol execution, in addition to bounded retained CLI workers and replay progress between rows. Recorded exploration remains the default; replay helpers reload without restarting setup. Failed Verify retains live state; unchanged first-attempt success qualifies without repetition. Reconnect after updating. CSV/policy, receipt and assertion checks apply; no app-specific routes or extra packages are needed.
 
 The server exposes GuiNavigation and VisibleControls by default. It rejects AllowShortcuts even with a nonempty policyReason and blocks mutations of older permissive runs; Status remains available for diagnosis. A model-written explanation is not user authorization. Application actions such as Open/Print must use visible menu/button routes. The operator may add `-EnableShortcutPolicy` to server startup only for an explicitly authorized shortcut task; tools cannot enable that capability, and per-run PolicyReason is still required. Do not add this flag for ordinary GUI tests. These are authoring checks, not an execution sandbox for arbitrary shell code.
 
 ## Register on the test machine
 
-Configure a local stdio MCP server through the agent's integrations settings, using command `powershell.exe` and arguments `-NoProfile`, `-ExecutionPolicy`, `Bypass`, `-File`, and the absolute path to `Invoke-ExplorationMcp.ps1`. Each argument is a separate array item. Alternatively, merge this table into the existing `%USERPROFILE%\.codex\config.toml` (preserve other settings):
+Configure a local stdio MCP server through the agent's integrations settings, using command `powershell.exe` and arguments `-NoProfile`, `-NonInteractive`, `-ExecutionPolicy`, `Bypass`, `-File`, and the absolute path to `Invoke-ExplorationMcp.ps1`. Each argument is a separate array item. Alternatively, merge this table into the existing `%USERPROFILE%\.codex\config.toml` (preserve other settings):
 
 ~~~toml
 [mcp_servers.agta]
 command = 'powershell.exe'
-args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'C:\diplomamunka\automated-gui-testing-agent-framework\Invoke-ExplorationMcp.ps1']
+args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\diplomamunka\automated-gui-testing-agent-framework\Invoke-ExplorationMcp.ps1']
 startup_timeout_sec = 60
 tool_timeout_sec = 180
 ~~~
@@ -81,6 +81,8 @@ Screenshot commands return PNG/JPEG pixels inline with their receipt and physica
 Compact observe presents one `elementColumns` header and `elementRows` arrays. Bounds are `[x,y,width,height]` in physical pixels. Flags contain focused/disabled/offscreen/ambiguous only when applicable; every node, pattern and selector is preserved. The original objects remain in the transcript. Target small observations before broadening depth/node budgets. Original screenshots remain unchanged.
 
 The last exploration response includes `mcpTiming.requestMs`, measuring server dispatch, CLI and receipt work. The client/tool round trip can add time outside it. Startup/import costs are paid once per server connection. Actual UI provider work, literal typing and required postcondition waits remain.
+
+Protocol execution is noninteractive: missing mandatory arguments fail immediately instead of prompting on JSON-RPC stdin. Existing configurations without -NonInteractive automatically enter a hidden noninteractive host with raw byte forwarding; no request becomes a PowerShell prompt answer. Adding the flag above avoids that compatibility process and its one-time startup. The host/provider exit with their parent. Assert-PotatoOk, Assert-PotatoFound, Assert-FileWait and Assert-TextContains accept each receipt through the pipeline as well as explicit Result arguments; they stop on the first failure and retain normal assertions/provenance/freshness checks.
 
 MCP and the Auto shell host retain a separate hidden CLI worker so a synchronous UIA/provider call cannot hold the server forever. Its default command deadline is 30 seconds, extended to an explicit CLI wait plus 5 seconds, up to 70 seconds. Timeout stops only that worker, preserves application windows and returns ProviderTimeout with outcome unknown. No action is retried: inspect Status/actual GUI before further input. A fresh worker handles subsequent commands. `logs/active-provider-command.json` records the command before dispatch and its deadline/state; agta_inspect includes this progress alongside bounded command history. The worker exits with its parent. Direct InProcess/Process shell transports do not use this isolation by default. The deadline bounds CLI calls, not arbitrary script/helper loops; Verify's progress boundary applies between rows, not inside one row.
 

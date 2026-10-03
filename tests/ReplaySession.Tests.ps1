@@ -121,6 +121,8 @@ try {
     Reject {Invoke-AGTAPlanStep $session} 'Unreviewed failure accepted more input.' | Out-Null
     Get-AGTAPlanStatus $session | Out-Null
     (Get-Content $path -Raw).Replace($bad,$good) | Set-Content $path
+    Reject {Close-AGTAPlanSession $session -Reason 'Body assertion fix requires a clean verification'} 'A code-edit reason discarded unfinished diagnostic recovery.' | Out-Null
+    Check (-not $session.closed -and $session.nextStepIndex -eq 2 -and (& $session.module {$State.value}) -eq 1) 'Rejected edit/restart discarded the successful prefix.'
     $retry=Invoke-AGTAPlanStep $session
     Check ($retry.ok -and $retry.status -eq 'RECOVERY_SUCCESS' -and -not $retry.countsAsSuccessfulStep) 'Recovery was confused with an original first-attempt pass.'
     Record $session $retry

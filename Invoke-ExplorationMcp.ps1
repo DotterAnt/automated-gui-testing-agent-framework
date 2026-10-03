@@ -1,11 +1,38 @@
 [CmdletBinding()]
-param([switch]$EnableShortcutPolicy)
+param([switch]$EnableShortcutPolicy,[int]$ProtocolParentId=0)
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 $env:AGTA_PROVIDER_ISOLATION='1'
 $env:PSModulePath=(Join-Path $PSHOME 'Modules')+';'+$env:PSModulePath
 [Console]::InputEncoding=[Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+# A mandatory-argument prompt must never read a JSON-RPC request as user input.
+# Existing integrations may omit -NonInteractive. Re-enter once and forward
+# raw stdio bytes outside PowerShell's host/pipeline machinery.
+if (-not @([Environment]::GetCommandLineArgs() | Where-Object {$_ -match '^-NonI(?:nteractive)?$'}).Count) {
+    $hostInfo=[Diagnostics.ProcessStartInfo]::new()
+    $hostInfo.FileName='powershell.exe'
+    $hostInfo.Arguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$PSCommandPath+'" -ProtocolParentId '+$PID
+    if ($EnableShortcutPolicy) {$hostInfo.Arguments+=' -EnableShortcutPolicy'}
+    $hostInfo.UseShellExecute=$false;$hostInfo.CreateNoWindow=$true
+    $hostInfo.RedirectStandardInput=$true;$hostInfo.RedirectStandardOutput=$true;$hostInfo.RedirectStandardError=$true
+    Add-Type -Path (Join-Path $PSScriptRoot 'Framework\ProcessLifetime.cs')
+    $protocolHost=[Diagnostics.Process]::Start($hostInfo)
+    try {
+        [AGTAProcessLifetime]::Relay([Console]::OpenStandardInput(),$protocolHost.StandardInput.BaseStream,$true)
+        [AGTAProcessLifetime]::Relay($protocolHost.StandardError.BaseStream,[Console]::OpenStandardError(),$false)
+        $protocolHost.StandardOutput.BaseStream.CopyTo([Console]::OpenStandardOutput())
+        $protocolHost.WaitForExit();$hostExit=$protocolHost.ExitCode
+    } finally {
+        if (-not $protocolHost.HasExited) {$protocolHost.Kill();[void]$protocolHost.WaitForExit(2000)}
+        $protocolHost.Dispose()
+    }
+    exit $hostExit
+}
+if ($ProtocolParentId) {
+    Add-Type -Path (Join-Path $PSScriptRoot 'Framework\ProcessLifetime.cs')
+    [AGTAProcessLifetime]::WatchParent($ProtocolParentId)
+}
 $entry=Join-Path $PSScriptRoot 'Invoke-Exploration.ps1'
 . (Join-Path $PSScriptRoot 'Framework\GeneratedScriptRuntime.ps1')
 . (Join-Path $PSScriptRoot 'Framework\ReplaySession.ps1')
@@ -41,7 +68,7 @@ $tools=@(
         inputSchema=@{type='object';required=@('action','runRoot');additionalProperties=$false;properties=@{
             action=@{type='string';enum=@('Start','Step','Repair','Skip','Status','Close','Verify')};runRoot=@{type='string'};
             scriptPath=@{type='string';description='Absolute template-based script path for Start/Verify; Step reloads saved bodies and helper functions without resetting state.'};
-            stepIndex=@{type='integer';minimum=1;description='Step: next pending row. Repair: required for GUI input, identifies the actual CSV row for receipts; does not advance the plan.'};reason=@{type='string';description='Skip: required. Close: explicit abandonment reason only when recovery cannot continue or the task is cancelled. Normal Close follows the last row; helpers/selectors reload live.'};
+            stepIndex=@{type='integer';minimum=1;description='Step: next pending row. Repair: required for GUI input, identifies the actual CSV row for receipts; does not advance the plan.'};reason=@{type='string';description='Skip: required. Close: edits/reverification cannot abandon unfinished recovery; helpers/selectors reload live. Exceptional abandonment must explicitly state cancellation or unrecoverable state. Normal Close follows the last row.'};
             requests=@{type='array';minItems=1;maxItems=20;items=@{type='object';required=@('command','arguments');additionalProperties=$false;properties=@{command=@{type='string'};arguments=@{type='array'}}}};
             includeImages=@{type='boolean';description='Return up to two retained screenshot evidence files inline; default true.'}
         }}}
@@ -285,7 +312,7 @@ while ($null -ne ($line=[Console]::ReadLine())) {
                     'initialize' {
                         if ($request.params.protocolVersion -isnot [string] -or -not $request.params.protocolVersion) {throw 'Initialize requires protocolVersion.'}
                         $version=if ($request.params.protocolVersion -in @('2024-11-05','2025-03-26','2025-06-18')) {$request.params.protocolVersion} else {'2025-06-18'}
-                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.6.0'}}
+                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.7.0'}}
                         $negotiated=$true;$ready=$false
                     }
                     'ping' {$reply.result=@{}}
