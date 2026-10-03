@@ -42,7 +42,7 @@ try {
     $legacy=Rpc initialize @{protocolVersion='2024-11-05';capabilities=@{};clientInfo=@{name='fixture';version='1'}}
     Check ($legacy.result.protocolVersion -eq '2024-11-05') 'MCP rejected the older supported protocol.'
     $hello=Rpc initialize @{protocolVersion='2025-06-18';capabilities=@{};clientInfo=@{name='fixture';version='1'}}
-    Check ($hello.result.protocolVersion -eq '2025-06-18' -and $hello.result.capabilities.tools -and $hello.result.serverInfo.version -eq '1.8.0') 'MCP handshake failed or loaded an old server.'
+    Check ($hello.result.protocolVersion -eq '2025-06-18' -and $hello.result.capabilities.tools -and $hello.result.serverInfo.version -eq '1.8.1') 'MCP handshake failed or loaded an old server.'
     $server.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}');$server.StandardInput.Flush()
     $list=Rpc 'tools/list' @{}
     Check ($list.result.tools.Count -eq 4 -and $list.result.tools[0].inputSchema.required -contains 'runRoot') 'Tool discovery lost input schemas.'

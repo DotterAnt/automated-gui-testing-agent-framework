@@ -38,6 +38,10 @@ Export-ModuleMember -Function Invoke-PotatoCliCommand
     Check ($healthy.ok -and $healthy.data.pid -ne $first.data.pid -and -not (Test-Path $marker)) 'Recovery could not create a healthy worker or automatically retried the failed command.'
     Check ((Get-AGTACliCommandDeadline @('-TimeoutMs','60000')) -eq 65000 -and (Get-AGTACliCommandDeadline @()) -eq 30000) 'Provider deadline ignored a legitimate bounded wait.'
     Check ((Get-AGTACliCommandDeadline @('-TimeoutMs=60000')) -eq 65000 -and (Get-AGTACliCommandDeadline @('-TimeoutMs')) -eq 30000) 'Provider deadline ignored an equals-form wait or mishandled a missing value.'
+    Check ((Get-AGTACliCommandDeadline @('-Text',('x'*1500)) type) -gt 60000) 'Worker could cut off a legitimate long paced type at 30 seconds.'
+    Check ((Get-AGTACliCommandDeadline @('-Text='+('x'*1500),'-VerifyTimeoutMs=5000') type) -eq 70000) 'Equals-form literal text or final verification was omitted from the bounded typing budget.'
+    Check ((Get-AGTACliCommandDeadline @('-Text',('x'*2000),'-InputDelayMs','100') type) -eq 70000 -and (Get-AGTACliCommandDeadline @('-Text','short') type) -eq 30000) 'Typing budget removed the provider cap or padded short commands.'
+    Check ((Get-AGTACliCommandDeadline @('-Text',('x'*1500)) state) -eq 30000) 'Typing budget changed unrelated provider commands.'
     'CLI worker: '+$checks+' checks passed; retained state calls median '+(@($times | Sort-Object)[3])+'ms.'
 } finally {
     foreach ($worker in $script:AGTACliWorkers.Values) {Stop-AGTACliWorker $worker}

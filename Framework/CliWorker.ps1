@@ -8,7 +8,7 @@ function Stop-AGTACliWorker {
     $Worker.process.Dispose()
 }
 function Get-AGTACliCommandDeadline {
-    param([object[]]$Arguments)
+    param([object[]]$Arguments,[string]$Command)
     $wait=0
     for ($i=0;$i -lt $Arguments.Count;$i++) {
         if ($Arguments[$i] -match '^-(TimeoutMs|MillisecondsToWait|WaitForWindowMs|VerifyTimeoutMs|FocusTimeoutMs)(?:=(\d+))?$') {
@@ -17,11 +17,33 @@ function Get-AGTACliCommandDeadline {
             if ([int]::TryParse($value,[ref]$number)) {$wait=[Math]::Max($wait,$number)}
         }
     }
-    [int][Math]::Min(70000,[Math]::Max(30000,$wait+5000))
+    $typingMs=0L
+    if ($Command -eq 'type') {
+        $text=$null;$delay=20;$legacy=$false
+        for ($i=0;$i -lt $Arguments.Count;$i++) {
+            if ($Arguments[$i] -match '^-(Text|InputDelayMs|TypeByCharacter)(?:=(.*))?$') {
+                $option=$Matches[1];$inline=$Matches.ContainsKey(2);$value=$Matches[2]
+                if (-not $inline -and $i+1 -lt $Arguments.Count) {$value=[string]$Arguments[$i+1]}
+                switch ($option) {
+                    Text {$text=[string]$value}
+                    InputDelayMs {$number=0;if ([int]::TryParse($value,[ref]$number) -and $number -ge 0 -and $number -le 100) {$delay=$number}}
+                    TypeByCharacter {$legacy=$value -notmatch '^(false|0)$'}
+                }
+            }
+        }
+        if ($legacy) {$delay=50}
+        if ($null -ne $text) {
+            # Include scheduler rounding and stable prefix consumption, so an
+            # intentional long type is not killed by the ordinary 30s limit.
+            $perUnit=[Math]::Max(60,([Math]::Ceiling($delay/16.0)*16)+50)
+            $typingMs=[long]$text.Length*[long]$perUnit
+        }
+    }
+    [int][Math]::Min(70000,[Math]::Max(30000,$typingMs+$wait+5000))
 }
 function Invoke-AGTAIsolatedCliCommand {
     param([string]$PotatoCliPath,[string]$Command,[object[]]$Arguments,[string]$RunRoot,[int]$DeadlineMs=0)
-    if (-not $DeadlineMs) {$DeadlineMs=Get-AGTACliCommandDeadline $Arguments}
+    if (-not $DeadlineMs) {$DeadlineMs=Get-AGTACliCommandDeadline $Arguments $Command}
     if ($DeadlineMs -lt 1 -or $DeadlineMs -gt 70000) {throw 'Provider deadline must be 1..70000 ms.'}
     $key=[IO.Path]::GetFullPath($PotatoCliPath)
     $worker=$script:AGTACliWorkers[$key]
