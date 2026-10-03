@@ -35,26 +35,22 @@ if ($ProtocolParentId) {
 }
 $entry=Join-Path $PSScriptRoot 'Invoke-Exploration.ps1'
 . (Join-Path $PSScriptRoot 'Framework\GeneratedScriptRuntime.ps1')
-. (Join-Path $PSScriptRoot 'Framework\ReplaySession.ps1')
+. (Join-Path $PSScriptRoot 'Framework\CommandHistory.ps1')
 $ready=$false
 $negotiated=$false
 $reviewRequired=@{}
-$planSessions=@{}
 $availablePolicies=@('GuiNavigation','VisibleControls')
 if ($EnableShortcutPolicy) {$availablePolicies+=,'AllowShortcuts'}
 $tools=@(
-    @{name='agta_explore';description='Explore first: Begin, Batch observed GUI actions, review RecordSteps, clean owned windows, Complete. No saved script is needed for exploration. Then generate from tested receipts and Replay Verify. IN_PROGRESS retains the session: continue Step then Close. Failure retains state for Status/Repair/Step/Skip. ProviderTimeout has unknown action outcome; inspect before further input. Use visible controls; reasons cannot authorize shortcuts.';
+    @{name='agta_explore';description='Explore first: Begin, Batch observed GUI actions, review RecordSteps, clean owned windows, Complete. Then generate from tested receipts and run the complete saved script through the shell. ProviderTimeout has unknown action outcome; inspect before further input. Use visible controls; reasons cannot authorize shortcuts.';
         inputSchema=@{type='object';required=@('action','runRoot');additionalProperties=$false;properties=@{
-            action=@{type='string';enum=@('Begin','Batch','RecordSteps','Status','Complete','Replay')};runRoot=@{type='string'};
-            workflowMode=@{type='string';enum=@('RecordedBatch','Live');description='Begin only. RecordedBatch is default: explore before writing code. Live explicitly opts into saved-body development; Batch is read-only in Live.'};
-            replayAction=@{type='string';enum=@('Start','Step','Repair','Skip','Status','Close','Verify');description='Required with action Replay; identical to agta_replay action.'};
-            scriptPath=@{type='string'};stepIndex=@{type='integer';minimum=1;description='Replay Repair: required for GUI input; actual CSV row for receipts. Does not advance the pending row.'};reason=@{type='string'};
+            action=@{type='string';enum=@('Begin','Batch','RecordSteps','Status','Complete')};runRoot=@{type='string'};
             testCaseCsv=@{type='string'};potatoCliPath=@{type='string'};
             interactionPolicy=@{type='string';enum=$availablePolicies};policyReason=@{type='string';description='Records existing user/testcase authorization, never an agent justification. Does not enable shortcut capability.'};
             requests=@{type='array';items=@{type='object'};description='Batch: {stepIndex,command,arguments:[],key?}. Identity/evidence argument values may use {resultRef:"earlierKey",path:"data.checkpointId"} to bind a previous result in this batch. RecordSteps: {stepIndex,route,observedResult,verificationCommandIds:[]}. Structured *Json values are supported.'};
             includeImages=@{type='boolean';description='Batch screenshots return their original PNG/JPEG pixels inline by default (last two, <=10 MiB each), alongside receipt/physical region. Inspect these directly without another file-view call. Set false for text-only receipts.'}
         }}}
-    @{name='agta_validate';description='Optional read-only standalone replay preflight using saved CSV/policy/manifest; completed exploration required. agta_replay Step/Verify and standalone scripts validate internally, so do not duplicate this check before each execution. Parses source without executing it; never substitutes for a passed run.';
+    @{name='agta_validate';description='Optional read-only standalone replay preflight using saved CSV/policy/manifest; completed exploration required. Saved scripts validate internally, so do not duplicate this check before each execution. Parses source without executing it; never substitutes for a passed run.';
         inputSchema=@{type='object';required=@('runRoot','scriptPath');additionalProperties=$false;properties=@{
             runRoot=@{type='string';description='Absolute existing exploration runRoot.'};scriptPath=@{type='string';description='Absolute generated replay path.'}
         }}}
@@ -63,14 +59,6 @@ $tools=@(
             topic=@{type='string';enum=@('authoring','cli','runtime','replay')};testCaseCsv=@{type='string';description='Authoring context can include the supplied CSV alongside the guide/template.'};names=@{type='array';minItems=1;maxItems=20;items=@{type='string'}};
             runRoot=@{type='string';description='Replay topic: completed run whose tested route reference should be restored after context compaction.'};stepIndex=@{type='integer';minimum=1;description='Replay topic: return only this CSV row; omit for all rows.'};
             detail=@{type='string';enum=@('signatures','full');description='Targeted help defaults to compact signatures; request full only for unresolved behavior.'}
-        }}}
-    @{name='agta_replay';description='After exploration, Verify runs the saved script once. IN_PROGRESS retains the session: continue Step from nextStepIndex, then Close. Failure retains state: Status, edit bodies/helpers, Repair with actual CSV stepIndex, then Step after restoring row entry state or Skip a manually finished row and continue. Never restart successful rows for helper/selector edits. First-attempt full success qualifies without repetition. Repaired sessions need one final clean Verify. ProviderTimeout has unknown outcome; inspect before input.';
-        inputSchema=@{type='object';required=@('action','runRoot');additionalProperties=$false;properties=@{
-            action=@{type='string';enum=@('Start','Step','Repair','Skip','Status','Close','Verify')};runRoot=@{type='string'};
-            scriptPath=@{type='string';description='Absolute template-based script path for Start/Verify; Step reloads saved bodies and helper functions without resetting state.'};
-            stepIndex=@{type='integer';minimum=1;description='Step: next pending row. Repair: required for GUI input, identifies the actual CSV row for receipts; does not advance the plan.'};reason=@{type='string';description='Skip: required. Close: edits/reverification cannot abandon unfinished recovery; helpers/selectors reload live. Exceptional abandonment must explicitly state cancellation or unrecoverable state. Normal Close follows the last row.'};
-            requests=@{type='array';minItems=1;maxItems=20;items=@{type='object';required=@('command','arguments');additionalProperties=$false;properties=@{command=@{type='string'};arguments=@{type='array'}}}};
-            includeImages=@{type='boolean';description='Return up to two retained screenshot evidence files inline; default true.'}
         }}}
     @{name='agta_inspect';description='Read bounded structured command diagnostics, or source image to measure retained image pixels against a reference without rerunning GUI input. Returns metrics/display orientation, never a qualifying PASS. Full command records stay on disk.';
         inputSchema=@{type='object';required=@('runRoot');additionalProperties=$false;properties=@{
@@ -82,30 +70,13 @@ $tools=@(
 function Invoke-McpTool($Name,$Arguments) {
     $watch=[Diagnostics.Stopwatch]::StartNew()
     if (-not $Arguments -or $Arguments -is [array] -or $Arguments -isnot [pscustomobject]) {throw 'Tool arguments must be an object.'}
-    if ($Name -eq 'agta_explore' -and $Arguments.action -ceq 'Replay') {
-        foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin @('action','replayAction','runRoot','scriptPath','stepIndex','reason','requests','includeImages')) {throw "Unknown live replay argument: $property"}}
-        $mapped=@{action=$Arguments.replayAction;runRoot=$Arguments.runRoot}
-        foreach ($key in @('scriptPath','stepIndex','reason','requests','includeImages')) {if ($Arguments.PSObject.Properties.Name -contains $key) {$mapped[$key]=$Arguments.$key}}
-        return Invoke-McpTool 'agta_replay' ([pscustomobject]$mapped)
-    }
     $global:LASTEXITCODE=0
     if ($Name -eq 'agta_explore') {
-        $allowed=@('action','runRoot','testCaseCsv','potatoCliPath','interactionPolicy','policyReason','requests','includeImages','workflowMode')
+        $allowed=@('action','runRoot','testCaseCsv','potatoCliPath','interactionPolicy','policyReason','requests','includeImages')
         foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin $allowed) {throw "Unknown exploration argument: $property"}}
         if ($Arguments.PSObject.Properties.Name -contains 'includeImages' -and $Arguments.includeImages -isnot [bool]) {throw 'includeImages must be Boolean.'}
         if ($Arguments.action -cnotin @('Begin','Batch','RecordSteps','Status','Complete') -or -not $Arguments.runRoot -or -not [IO.Path]::IsPathRooted($Arguments.runRoot)) {throw 'Use a supported action and an absolute runRoot.'}
         $runKey=[IO.Path]::GetFullPath($Arguments.runRoot)
-        if ($Arguments.PSObject.Properties.Name -contains 'workflowMode' -and ($Arguments.action -ne 'Begin' -or $Arguments.workflowMode -cnotin @('Live','RecordedBatch'))) {throw 'workflowMode is Begin-only: Live or RecordedBatch.'}
-        $manifestPath=Join-Path $runKey 'logs\exploration.json'
-        $savedManifest=if ([IO.File]::Exists($manifestPath)) {[IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json} else {$null}
-        if ($Arguments.action -eq 'Batch' -and $savedManifest.workflowMode -eq 'Live' -and
-            @($Arguments.requests | Where-Object {-not (Test-AGTAReadOnlyCommand $_.command)}).Count) {
-            throw 'Live authoring requires testing the saved body. Save the template, then call agta_explore action Replay, replayAction Start with scriptPath, and replayAction Step. Use Replay Repair for live recovery; Batch is read-only discovery. Do not restart the full script.'
-        }
-        if ($Arguments.action -eq 'Batch' -and @($planSessions.Values | Where-Object {-not $_.closed}).Count -and
-            @($Arguments.requests | Where-Object {-not (Test-AGTAReadOnlyCommand $_.command)}).Count) {
-            throw 'A live plan owns this desktop route. Use agta_replay Repair for GUI input so repairs and ownership are recorded; agta_explore remains available for read-only discovery and RecordSteps.'
-        }
         if (-not $EnableShortcutPolicy) {
             $savedPolicy=$null
             $manifestPath=Join-Path $runKey 'logs\exploration.json'
@@ -125,17 +96,10 @@ function Invoke-McpTool($Name,$Arguments) {
         if ($Arguments.action -eq 'Batch' -and $LASTEXITCODE -ne 0) {$reviewRequired[$runKey]=$true}
         if ($Arguments.action -eq 'Status' -and $LASTEXITCODE -eq 0) {$reviewRequired.Remove($runKey)}
         if ($Arguments.action -eq 'Begin' -and $LASTEXITCODE -eq 0) {
-            $mode=if ($Arguments.workflowMode) {$Arguments.workflowMode} else {'RecordedBatch'}
-            $savedManifest=[IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
-            $savedManifest | Add-Member -NotePropertyName workflowMode -NotePropertyValue $mode -Force
-            $savedManifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
             $begin=$responses[-1] | ConvertFrom-Json
             $begin | Add-Member -NotePropertyName stepCount -NotePropertyValue @($begin.steps).Count -Force
             $begin.PSObject.Properties.Remove('steps')
-            $begin | Add-Member -NotePropertyName workflowMode -NotePropertyValue $mode -Force
-            $begin | Add-Member -NotePropertyName replayAvailable -NotePropertyValue $true -Force
-            $begin.next=if ($mode -eq 'Live') {'Explicit Live mode: save bodies incrementally and use Replay Start/Step. Batch is read-only. Bodies/helpers reload without resetting state; initializers require Close/Start. Review RecordSteps and Close to qualify clean first attempts.'} else {'Explore now with Batch; no script is required. Use observed controls and real row indices, review RecordSteps, clean owned windows, Complete. Only then generate from tested receipts and call Replay Verify once. Failed Verify retains state for recovery.'}
-            if ($mode -eq 'Live') {$begin | Add-Member nextCall @{tool='agta_explore';arguments=@{action='Replay';replayAction='Start';runRoot=$runKey;scriptPath='<absolute saved template path>'}} -Force}
+            $begin.next='Explore now with Batch; no script is required. Use observed controls and real row indices, review RecordSteps, clean owned windows and Complete. Generate from tested receipts, then run the complete saved script through the shell.'
             $begin.workflow.nextAction=$begin.next
             $responses[-1]=$begin | ConvertTo-Json -Depth 80 -Compress
         }
@@ -150,54 +114,9 @@ function Invoke-McpTool($Name,$Arguments) {
         if ($scriptHash -ne $currentHash) {$audit.ok=$false;$audit.issues+=,'Script changed during validation. Validate the saved revision again before replay.'}
         $result=[ordered]@{ok=$audit.ok;stage='replay_preflight';replayExecuted=$false;taskComplete=$false;issues=$audit.issues;checkedCommands=$audit.checkedCommands;
             scriptPath=$Arguments.scriptPath;scriptHash=$scriptHash;
-            nextAction=$(if ($audit.ok) {'Use the saved revision with agta_replay Step/Verify, or run the standalone script. Execution validates internally; static validation alone is not task completion.'} else {'Correct the issues. Incomplete exploration may continue through live diagnostic Step development; full qualifying replay still requires all reviewed rows. Do not deliver a partial script.'})}
+            nextAction=$(if ($audit.ok) {'Run the complete saved script through the shell. Execution validates internally; static validation alone is not task completion.'} else {'Correct the issues and finish recorded exploration before running the complete saved script. Do not deliver a partial script.'})}
         if (-not $audit.ok) {$global:LASTEXITCODE=1}
         $responses=@(($result | ConvertTo-Json -Depth 8 -Compress))
-    } elseif ($Name -eq 'agta_replay') {
-        foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin @('action','runRoot','scriptPath','stepIndex','reason','requests','includeImages')) {throw "Unknown replay argument: $property"}}
-        if (-not $Arguments.runRoot -or -not [IO.Path]::IsPathRooted($Arguments.runRoot)) {throw 'Replay requires an absolute runRoot.'}
-        if ($Arguments.includeImages -and $Arguments.includeImages -isnot [bool]) {throw 'includeImages must be Boolean.'}
-        $runKey=[IO.Path]::GetFullPath($Arguments.runRoot)
-        $session=$planSessions[$runKey]
-        $manifestPath=Join-Path $runKey 'logs\exploration.json'
-        $manifest=[IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
-        if ($manifest.interactionPolicy -eq 'AllowShortcuts' -and -not $EnableShortcutPolicy) {throw 'Shortcut authorization is disabled in this MCP server.'}
-        switch -CaseSensitive ($Arguments.action) {
-            'Start' {
-                if (@($planSessions.Values | Where-Object {-not $_.closed}).Count) {throw 'Close the existing live plan before starting another desktop session.'}
-                if ($manifest.workflowMode -eq 'RecordedBatch' -and -not (Test-AGTAExploration -Path $manifestPath -TestCaseCsv $manifest.testCasePath -InteractionPolicy $manifest.interactionPolicy).ok) {throw 'Explore first with Batch, review RecordSteps, clean owned windows and Complete before Replay Start/Verify. Do not write guessed selectors before observing the UI.'}
-                if (-not $Arguments.scriptPath -or -not [IO.Path]::IsPathRooted($Arguments.scriptPath)) {throw 'Start needs absolute scriptPath.'}
-                if ($session) {Remove-Module $session.module -ErrorAction SilentlyContinue}
-                $session=Import-AGTAPlanSession $runKey $Arguments.scriptPath
-                $planSessions[$runKey]=$session
-                Save-AGTAPlanSession $session
-                $value=@{ok=$true;runKind='Diagnostic';qualifying=$false;nextStepIndex=1;executionEvidenceRoot=$session.context.ExecutionEvidenceRoot;resultPath=$session.context.ResultPath;next='Run the next saved body with Step. Variables, paths and ownership persist; body/helper edits reload in place. RecordSteps only when still exploring.'}
-            }
-            'Step' {if (-not $session) {throw 'Start the live plan first.'};$value=Invoke-AGTAPlanStep $session -StepIndex $Arguments.stepIndex}
-            'Repair' {if (-not $session) {throw 'Start the live plan first.'};$value=@(Invoke-AGTAPlanRepair $session $Arguments.requests -StepIndex $Arguments.stepIndex)}
-            'Skip' {if (-not $session) {throw 'Start the live plan first.'};$value=Skip-AGTAPlanStep $session $Arguments.reason}
-            'Status' {if (-not $session) {throw 'Start the live plan first.'};$value=Get-AGTAPlanStatus $session}
-            'Close' {if (-not $session) {throw 'Start the live plan first.'};$value=Close-AGTAPlanSession $session -Reason $Arguments.reason}
-            'Verify' {
-                if (@($planSessions.Values | Where-Object {-not $_.closed}).Count) {throw 'Close the live desktop session first so ownership cleanup precedes any full replay.'}
-                if ($session -and $session.qualified -and $session.definition.scriptHash -eq (Get-FileHash $session.scriptPath -Algorithm SHA256).Hash -and
-                    (-not $Arguments.scriptPath -or $Arguments.scriptPath -eq $session.scriptPath)) {$value=$session.finalResult;break}
-                $path=if ($Arguments.scriptPath) {$Arguments.scriptPath} elseif ($session) {$session.scriptPath} else {$null}
-                if (-not $path -or -not [IO.Path]::IsPathRooted($path)) {throw 'Verify needs an absolute scriptPath.'}
-                if ($session -and -not (Test-AGTAExploration -Path $session.context.ExplorationPath -TestCaseCsv $manifest.testCasePath -InteractionPolicy $manifest.interactionPolicy).ok) {
-                    Complete-AGTAExploration $runKey $manifest.testCasePath $manifest.interactionPolicy | Out-Null
-                }
-                $explorationAudit=Test-AGTAExploration -Path (Join-Path $runKey 'logs\exploration.json') -TestCaseCsv $manifest.testCasePath -InteractionPolicy $manifest.interactionPolicy
-                if (-not $explorationAudit.ok) {throw ('Verify requires reviewed complete exploration. Use Replay Start/Step to develop missing rows: '+($explorationAudit.issues -join '; '))}
-                if ($session) {Remove-Module $session.module -ErrorAction SilentlyContinue}
-                $verification=Import-AGTAPlanSession $runKey $path
-                $planSessions[$runKey]=$verification
-                $value=Invoke-AGTAPlanVerification $verification
-            }
-            default {throw 'Unsupported replay action.'}
-        }
-        $responses=@($value | ForEach-Object {if ($_ -is [string]) {$_} else {$_ | ConvertTo-Json -Depth 70 -Compress}})
-        if (@($responses | ForEach-Object {$_ | ConvertFrom-Json} | Where-Object {$_.ok -eq $false}).Count) {$global:LASTEXITCODE=1}
     } elseif ($Name -eq 'agta_inspect') {
         foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin @('runRoot','source','last','stepIndex','imagePath','referencePath','referenceRotation','region')) {throw "Unknown inspection argument: $property"}}
         if (-not $Arguments.runRoot -or -not [IO.Path]::IsPathRooted($Arguments.runRoot)) {throw 'Inspection needs an absolute runRoot.'}
@@ -265,13 +184,8 @@ function Invoke-McpTool($Name,$Arguments) {
         $responses[$last]=$final | ConvertTo-Json -Depth 80 -Compress
     }
     $content=@(@{type='text';text=$responses -join "`n"})
-    if (($Name -eq 'agta_explore' -and $Arguments.action -eq 'Batch' -or $Name -eq 'agta_replay') -and $Arguments.includeImages -ne $false) {
+    if (($Name -eq 'agta_explore' -and $Arguments.action -eq 'Batch') -and $Arguments.includeImages -ne $false) {
         $screens=@($responses | ForEach-Object {$_ | ConvertFrom-Json} | Where-Object {$_.command -eq 'screenshot' -and $_.ok} | Select-Object -Last 2)
-        if ($Name -eq 'agta_replay' -and $Arguments.action -in @('Step','Verify')) {
-            $screens+=@($final.images | ForEach-Object {
-                @{explorationCommandId='step-evidence';data=@{path=$_.path;format=$_.format;region=$_.region}}
-            })
-        }
         foreach ($screen in $screens) {
             try {
                 $path=[string]$screen.data.path
@@ -312,14 +226,14 @@ while ($null -ne ($line=[Console]::ReadLine())) {
                     'initialize' {
                         if ($request.params.protocolVersion -isnot [string] -or -not $request.params.protocolVersion) {throw 'Initialize requires protocolVersion.'}
                         $version=if ($request.params.protocolVersion -in @('2024-11-05','2025-03-26','2025-06-18')) {$request.params.protocolVersion} else {'2025-06-18'}
-                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.7.0'}}
+                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.8.0'}}
                         $negotiated=$true;$ready=$false
                     }
                     'ping' {$reply.result=@{}}
                     'tools/list' {if (-not $ready) {throw 'Initialize the MCP session first.'};$reply.result=@{tools=$tools}}
                     'tools/call' {
                         if (-not $ready) {throw 'Initialize the MCP session first.'}
-                        if ($request.params.name -cnotin @('agta_explore','agta_help','agta_validate','agta_replay','agta_inspect')) {$reply.error=@{code=-32602;message='Unknown tool.'};break}
+                        if ($request.params.name -cnotin @('agta_explore','agta_help','agta_validate','agta_inspect')) {$reply.error=@{code=-32602;message='Unknown tool.'};break}
                         try {$reply.result=Invoke-McpTool $request.params.name $request.params.arguments}
                         catch {
                             $failure=@{ok=$false;error=$_.Exception.Message;next='Inspect Status/actual GUI before retrying an uncertain dispatch.'}

@@ -18,8 +18,7 @@ function Initialize-AGTAGeneratedTest {
         [ValidateSet('VisibleControls','GuiNavigation','AllowShortcuts')] [string] $InteractionPolicy = 'GuiNavigation',
         [string] $PolicyReason,
         [string] $ExplorationPath,
-        [ValidateSet('InProcess','Process')] [string] $Transport = 'InProcess',
-        [ValidateSet('Replay','Diagnostic')] [string] $RunKind = $(if ($script:AGTAPlanSessionKind -eq 'Diagnostic') {'Diagnostic'} else {'Replay'})
+        [ValidateSet('InProcess','Process')] [string] $Transport = 'InProcess'
     )
 
     # PowerShell's current location can differ from the process current directory.
@@ -45,14 +44,7 @@ function Initialize-AGTAGeneratedTest {
         if (-not $scriptAudit.ok) { throw ('Generated script audit failed before desktop use: '+($scriptAudit.issues -join '; ')) }
     }
     if (-not $ExplorationPath) { $ExplorationPath=Join-Path $RunRoot 'logs\exploration.json' }
-    $savedExploration=if ([IO.File]::Exists($ExplorationPath)) {[IO.File]::ReadAllText($ExplorationPath) | ConvertFrom-Json} else {$null}
-    if ($savedExploration.workflowMode -eq 'Live' -and $script:AGTAPlanSessionKind -notin @('Diagnostic','Replay')) {
-        if (-not $callerPath -or $savedExploration.liveReplayValidatedScriptHash -ne (Get-FileHash -LiteralPath $callerPath -Algorithm SHA256).Hash) {
-            throw 'This MCP Live authoring run has no qualifying result for this script revision. Use agta_explore action Replay with replayAction Start/Step, or Verify; failures retain the live session for recovery. Standalone replay is available after the final revision qualifies.'
-        }
-    }
-    if ($script:AGTAPlanSessionKind -eq 'Diagnostic') {$RunKind='Diagnostic'}
-    $exploration=Test-AGTAExploration -Path $ExplorationPath -TestCaseCsv $TestCaseCsv -InteractionPolicy $InteractionPolicy -AllowIncomplete:($RunKind -eq 'Diagnostic')
+    $exploration=Test-AGTAExploration -Path $ExplorationPath -TestCaseCsv $TestCaseCsv -InteractionPolicy $InteractionPolicy
     if (-not $exploration.ok) { throw ('Complete GUI exploration is required before execution: '+($exploration.issues -join '; ')) }
     $cliModule = $null
     if ($Transport -eq 'InProcess') {
@@ -71,7 +63,7 @@ function Initialize-AGTAGeneratedTest {
     $resultsRoot = Join-Path -Path $RunRoot -ChildPath 'results'
     $executionEvidenceRoot = Join-Path -Path $evidenceRoot -ChildPath $ExecutionId
     $commandLogPath = Join-Path -Path $logsRoot -ChildPath ("potato-commands-$ExecutionId.jsonl")
-    $resultPath = Join-Path -Path $resultsRoot -ChildPath $(if ($RunKind -eq 'Diagnostic') {"diagnostic-$ExecutionId.json"} else {'result.json'})
+    $resultPath = Join-Path -Path $resultsRoot -ChildPath 'result.json'
 
     foreach ($path in @($RunRoot, $evidenceRoot, $logsRoot, $resultsRoot, $executionEvidenceRoot)) {
         if (-not (Test-Path -LiteralPath $path)) {
@@ -104,12 +96,8 @@ function Initialize-AGTAGeneratedTest {
         Timing = [ordered]@{ commandCount=0; wrapperMs=0L; backendMs=0L; waitMs=0L; cleanupMs=0L }
         LastCommandTiming = $null
         FinalOk = $false
-        RunKind = $RunKind
-        SourceScriptPath = $null
-        SourceScriptHash = $null
+        RunKind = 'Replay'
         ActiveStep = 0
-        AttemptId = $null
-        RecordExploration = ($RunKind -eq 'Diagnostic' -and -not $exploration.completedAt)
     }
     $script:AGTAOpenedProcessNames = @()
     $script:AGTAOpenedWindows = @()
@@ -155,10 +143,6 @@ function Invoke-PotatoJson {
 
     $context = Get-AGTAGeneratedTestContext
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
-    if ($context.RecordExploration) {
-        $manifest=[IO.File]::ReadAllText($context.ExplorationPath) | ConvertFrom-Json
-        if ($manifest.completed) {$context.RecordExploration=$false}
-    }
     $Arguments=@(Resolve-AGTACommandArguments $Command $Arguments)
     $raw = @()
     $exitCode = 0
@@ -209,18 +193,11 @@ function Invoke-PotatoJson {
         parsed = $parsed
         stepIndex = $context.ActiveStep
         runKind = $context.RunKind
-        attemptId = $context.AttemptId
         wrapperDurationMs = [int]$watch.ElapsedMilliseconds
         transport = $context.Transport
         interactionPolicy = $context.InteractionPolicy
         exitCode = $exitCode
     } | ConvertTo-Json -Depth 80 -Compress | Add-Content -LiteralPath $context.CommandLogPath -Encoding UTF8 -ErrorAction Stop
-
-    if ($context.RecordExploration -and $context.ActiveStep -gt 0) {
-        $receipt=Add-AGTAExplorationCommand $context.RunRoot $context.ActiveStep $Command $Arguments $parsed
-        $parsed | Add-Member -NotePropertyName explorationCommandId -NotePropertyValue $receipt -Force
-        $parsed | Add-Member -NotePropertyName verification -NotePropertyValue (Get-AGTAExplorationVerificationInfo @{command=$Command;result=$parsed}) -Force
-    }
 
     return $parsed
 }
@@ -831,15 +808,11 @@ function Complete-AGTAGeneratedTest {
         }
     }
     $ok = ($context.PolicyCompliant -and $coverageOk -and $validStatuses -and $cleanupOk -and $assertionsOk -and $summary.failed -eq 0 -and $summary.skipped -eq 0)
-    if ($context.RunKind -eq 'Diagnostic') {
-        $ok=$false
-        foreach ($step in $StepResults) {$step.status='DIAGNOSTIC_'+$step.status}
-        $summary=[ordered]@{total=$summary.total;diagnosticPassed=$summary.passed;diagnosticFailed=$summary.failed;diagnosticSkipped=$summary.skipped;cleanupOk=$cleanupOk}
-    }
     $final = [ordered]@{
         ok = $ok
         runKind = $context.RunKind
-        qualifying = ($context.RunKind -eq 'Replay')
+        # Full attempts remain eligible for comparison even when ok is false.
+        qualifying = $true
         summary = $summary
         cleanupOk = $cleanupOk
         interactionPolicy = @{ mode=$context.InteractionPolicy; reason=$context.PolicyReason; compliant=$context.PolicyCompliant; assessment='Recorded CLI policy and static script checks; external activity is not sandboxed.'; scriptAuditPerformed=($null -ne $context.ScriptAudit) }
@@ -862,17 +835,7 @@ function Complete-AGTAGeneratedTest {
     $context.Timing.commandOverheadMs = $context.Timing.wrapperMs - $context.Timing.backendMs
     $context.Timing.otherMs = $context.Timing.totalMs - $context.Timing.wrapperMs
     $final | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath $context.ResultPath -Encoding UTF8
-    if ($context.RunKind -eq 'Replay') {
-        $final | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath (Join-Path $context.ResultsRoot ("replay-$($context.ExecutionId).json")) -Encoding UTF8
-    }
-    if ($ok -and $context.RunKind -eq 'Replay' -and $context.SourceScriptPath -and $context.SourceScriptHash -eq (Get-FileHash -LiteralPath $context.SourceScriptPath -Algorithm SHA256).Hash) {
-        $manifest=[IO.File]::ReadAllText($context.ExplorationPath) | ConvertFrom-Json
-        if ($manifest.workflowMode -eq 'Live') {
-            $manifest | Add-Member -NotePropertyName liveReplayValidatedScriptHash -NotePropertyValue $context.SourceScriptHash -Force
-            $manifest | Add-Member -NotePropertyName liveReplayExecutionId -NotePropertyValue $context.ExecutionId -Force
-            $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $context.ExplorationPath -Encoding UTF8
-        }
-    }
+    $final | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath (Join-Path $context.ResultsRoot ("replay-$($context.ExecutionId).json")) -Encoding UTF8
     if ($PassThru) { return [pscustomobject]$final }
     if ($OutputMode -eq 'Full') { $final | ConvertTo-Json -Depth 80 -Compress; return }
     ConvertTo-AGTACompactTestResult $final | ConvertTo-Json -Depth 40 -Compress
@@ -889,7 +852,7 @@ function ConvertTo-AGTACompactTestResult {
         executionId=$Result.executionId;runRoot=$Result.runRoot;artifacts=$Result.artifacts;
         steps=@($Result.steps | ForEach-Object {
             [ordered]@{stepIndex=$_.stepIndex;action=$_.action;status=$_.status;error=$_.error;
-                evidenceCount=@($_.evidence).Count;evidence=@(if ($_.status -in @('FAIL','DIAGNOSTIC_FAIL')) {$_.evidence | Select-Object -Last 2});
+                evidenceCount=@($_.evidence).Count;evidence=@(if ($_.status -eq 'FAIL') {$_.evidence | Select-Object -Last 2});
                 failedCommands=@($_.commands | Where-Object {-not $_.ok})}
         })}
 }

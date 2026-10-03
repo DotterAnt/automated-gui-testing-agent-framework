@@ -276,8 +276,8 @@ function Complete-AGTAExploration {
             'New GUI handoff: checkpoint before opening, then focus SinceCheckpoint to register its new window. Reused window: exact fresh foregroundSelector with WindowSelectorJson; plain focus does not grant cleanup ownership.',
             'First-run/import/already-present state may change during exploration. Probe optional controls without input; branch on actual state before mandatory actions.',
             'Opaque asynchronous controls: screenshot WaitForImageMatch plus observed MatchRegionJson and clockwise ReferenceRotation awaits expected image pixels. WaitForChangeFrom/ChangeRegionJson only awaits change/stability, which can be a loading screen. Preserve tested waits, bounds/origin and assert conditionMet; never repeat clicks or raise content tolerances after a stale capture.',
-            'Every content/layout expectation needs actual replay assertions. Screenshot existence, dimensions and PDF markers do not prove the image or absence of cropping.',
-            'Step/Verify preflight internally. Failed Verify retains state: Status, edit bodies/helpers, Repair, Skip a manually finished row or retry after restoring entry state, then continue Step. Close after reaching the end, then one final Verify. Never restart successful rows for a selector/helper edit.');
+            'Match assertions to the CSV expectation. For PDF existence only, wait-file and Assert-FileWait are sufficient; do not render or extract content. Use content/layout assertions only when specified.',
+            'Run the complete saved script through the shell; it preflights internally and cleans owned windows. On failure inspect bounded command history, fix the saved script and rerun it in full. A successful full run needs no repetition.');
         steps=@($routes | ForEach-Object {
             $row=$_
             [ordered]@{stepIndex=$row.stepIndex;route=$row.route;observedResult=$row.observedResult;
@@ -305,20 +305,19 @@ function Get-AGTAExplorationWorkflow {
     $m=Get-Content -LiteralPath $paths.manifest -Raw | ConvertFrom-Json
     $missing=@(1..$m.stepCount | Where-Object {$_ -notin @($m.steps.stepIndex)})
     $next='Continue Batch exploration of the missing CSV rows. Review actual expected results and RecordSteps. Complete exploration before generating a replay.'
-    if ($m.workflowMode -eq 'Live') {$next='Live: Replay Start/Step tests saved bodies; Status/Repair handles failures. Batch is read-only. Review RecordSteps, then Close.'}
     if ($m.completed) {
-        $next='Exploration is complete. A clean first-attempt live plan may already qualify on Close; otherwise Verify the final saved revision after cleanup. Preflight alone is not a passed test.'
+        $next='Exploration is complete. Generate from tested receipts and run the complete saved script through the shell. A successful full run with assertions and cleanup completes validation; preflight alone does not.'
     } elseif ($Command -in @('RecordStep','RecordSteps') -and $Result.ok -eq $false) {
         $next='Recording failed without dispatching GUI input. Correct the verification IDs using existing row receipts. Each ID must follow a successful action in that row; recording order is unrestricted. Repeat GUI work only when its actual expected result is missing.'
     } elseif ($Result -and -not (Test-AGTAExplorationCommandSucceeded $Result $Command)) {
         $next='Recover the failed command using observed GUI state, then resume this walkthrough. Do not replace unfinished rows with guessed script steps or deliver a partial result.'
     } elseif (-not $missing.Count) {
-        $next='All rows are recorded. Use agta_replay Close for the live plan; otherwise close exploration-owned windows, verify cleanup and Complete before full replay.'
+        $next='All rows are recorded. Close exploration-owned windows, verify cleanup and Complete before generating and running the saved script.'
     } elseif ($StepIndex -in $missing -and $Result.verification.eligible) {
         $next='Review whether the observations prove every expectation of this row. If so, record it now; otherwise finish its missing actions and assertions. Continue the remaining rows.'
     }
     # This checkpoint cannot establish completion of the subsequent script execution.
-    [ordered]@{stage=$(if ($m.completed) {'development_iteration'} else {'exploration'});
+    [ordered]@{stage=$(if ($m.completed) {'replay'} else {'exploration'});
         explorationComplete=[bool]$m.completed;recorded=$m.steps.Count;required=$m.stepCount;
         missingSteps=$missing;nextAction=$next}
 }
@@ -340,18 +339,17 @@ function Get-AGTAExplorationStatus {
 }
 
 function Test-AGTAExploration {
-    param([string]$Path, [string]$TestCaseCsv, [string]$InteractionPolicy, [switch]$AllowIncomplete)
+    param([string]$Path, [string]$TestCaseCsv, [string]$InteractionPolicy)
     try {
         if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'Completed exploration manifest is required. Use Invoke-Exploration.ps1 for every CSV row before generating the script.' }
         $m=Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
         if ($m.schemaVersion -ne 1) { throw 'Unsupported exploration manifest version.' }
-        if ((-not $m.completed -or -not $m.completedAt) -and -not $AllowIncomplete) { throw 'Exploration is incomplete. Resume the existing walkthrough: use Status, finish and record every missing CSV row, then Complete before qualifying replay. Diagnostic step development may continue in agta_replay.' }
+        if (-not $m.completed -or -not $m.completedAt) { throw 'Exploration is incomplete. Resume the existing walkthrough: use Status, finish and record every missing CSV row, then Complete before qualifying replay.' }
         if ($m.interactionPolicy -ne $InteractionPolicy) { throw 'Exploration and execution policies differ.' }
         if ($m.testCaseHash -ne (Get-FileHash -LiteralPath $TestCaseCsv -Algorithm SHA256).Hash) { throw 'Exploration belongs to a different testcase CSV.' }
         if ($m.completed -and $m.transcriptHash -ne (Get-FileHash -LiteralPath $m.transcriptPath -Algorithm SHA256).Hash) { throw 'Exploration transcript changed after completion.' }
         $rows=@(Import-Csv -LiteralPath $TestCaseCsv)
         if ($m.stepCount -ne $rows.Count -or ($m.completed -and @($m.steps).Count -ne $rows.Count)) { throw 'Exploration row coverage differs from the CSV.' }
-        if (-not $m.completed -and $AllowIncomplete) { return @{ok=$true;path=$Path;completed=$false;issues=@()} }
         $records=@(Get-Content -LiteralPath $m.transcriptPath | ForEach-Object { $_ | ConvertFrom-Json })
         for ($i=1;$i -le $rows.Count;$i++) {
             $step=@($m.steps | Where-Object {$_.stepIndex -eq $i})
