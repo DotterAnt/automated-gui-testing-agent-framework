@@ -215,6 +215,12 @@ exit (Get-AGTATestExitCode)
     try {Resolve-AGTACommandArguments start @('-RequireNewWindow','false') | Out-Null} catch {$disabled=$true}
     Check $disabled 'Framework launch ownership was silently disabled.'
     Register-OpenedProcess -StartResult ([pscustomobject]@{ok=$true;data=@{ownedProcessId=2147483647}})
+    $beforeWindows=@($script:AGTAOpenedWindows).Count;$beforeProcesses=@($script:AGTAOpenedProcessNames).Count
+    $ticket=@{nativeWindowHandle=123;windowToken='unit-ticket';processStartTime='unit-start';processId=42}
+    $sharedStart=[pscustomobject]@{ok=$true;data=@{ownedWindow=$ticket}}
+    Register-OpenedProcess $sharedStart;Register-OpenedProcess $sharedStart
+    Check (@($script:AGTAOpenedWindows).Count -eq $beforeWindows+1 -and @($script:AGTAOpenedProcessNames).Count -eq $beforeProcesses) 'Window-only ownership registration failed, duplicated a ticket or adopted its shared process.'
+    $script:AGTAOpenedWindows=@($script:AGTAOpenedWindows | Where-Object {$_.windowToken -ne 'unit-ticket'})
     Check ($script:AGTAOpenedProcessNames.Count -eq 1) 'An exited launcher threw or registered an unrelated owner.'
     $script:remaining=1
     $script:closeArgs=@()

@@ -130,15 +130,14 @@ try {
             # Validate/normalize the whole batch before the first GUI action.
             # JSON objects are allowed only as values of *Json options, just as
             # in generated replays. A malformed later request dispatches nothing.
-            foreach ($request in $requests) {
-                if ($request.stepIndex -lt 1 -or $request.stepIndex -gt $m.stepCount -or -not $request.command) { throw 'Every command needs a valid stepIndex and command; no action was dispatched.' }
-                $request.arguments=@(Resolve-AGTACommandArguments $request.command @($request.arguments) -InteractionPolicy $InteractionPolicy)
-            }
+            Assert-AGTABatchRequests $requests $m.stepCount $InteractionPolicy
+            $batchResults=@{}
             $requestIndex=0
             foreach ($request in $requests) {
-                $values=@($request.arguments)
+                $values=@(Resolve-AGTABatchArguments $request.command @($request.arguments) $batchResults $InteractionPolicy)
                 if ($OutputMode -eq 'Compact' -and $request.command -eq 'observe' -and -not @($values | Where-Object {$_ -match '^--?Format(?:=|$)'}).Count) { $values+=@('-Format','Compact') }
                 $result=Invoke-AGTAPotatoJson -PotatoCliPath $PotatoCliPath -Command $request.command -Arguments $values -RunRoot $RunRoot -InteractionPolicy $InteractionPolicy
+                if ($request.key) {$batchResults[$request.key]=$result}
                 $id=Add-AGTAExplorationCommand $RunRoot $request.stepIndex $request.command $values $result
                 $result | Add-Member -NotePropertyName explorationCommandId -NotePropertyValue $id -Force
                 $result | Add-Member -NotePropertyName verification -NotePropertyValue (Get-AGTAExplorationVerificationInfo @{command=$request.command;result=$result}) -Force

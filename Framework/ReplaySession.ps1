@@ -184,8 +184,17 @@ function Invoke-AGTAPlanStep {
 }
 
 function Invoke-AGTAPlanVerification {
-    param($Session)
-    do {$value=Invoke-AGTAPlanStep $Session} while ($value.ok -and $Session.nextStepIndex -le $Session.context.Steps.Count)
+    param($Session,[int]$MaxActiveMs=$(if ($env:AGTA_PROVIDER_ISOLATION -eq '1') {30000} else {0}))
+    $requestWatch=[Diagnostics.Stopwatch]::StartNew()
+    do {
+        $value=Invoke-AGTAPlanStep $Session
+        if ($value.ok -and $Session.nextStepIndex -le $Session.context.Steps.Count -and $MaxActiveMs -gt 0 -and $requestWatch.ElapsedMilliseconds -ge $MaxActiveMs) {
+            return @{ok=$true;status='IN_PROGRESS';qualifying=$false;runKind='Diagnostic';nextStepIndex=$Session.nextStepIndex;lastCompletedStep=$value;
+                firstAttemptSuccesses=@($Session.attempts | Where-Object {$_.countsAsSuccessfulStep} | ForEach-Object {@{stepIndex=$_.stepIndex;status=$_.status;countsAsSuccessfulStep=$true}});
+                resultPath=$Session.context.ResultPath;commandLogPath=$Session.context.CommandLogPath;
+                next='Verification yielded between completed rows to keep the tool responsive. The same live session and successful prefix are retained. Continue Step from nextStepIndex, then Close after the final row. Unchanged first-attempt successes still qualify; do not start another Verify or rerun completed rows.'}
+        }
+    } while ($value.ok -and $Session.nextStepIndex -le $Session.context.Steps.Count)
     if ($value.ok) {return Close-AGTAPlanSession $Session}
     $value.next='Verification stopped and kept the live app/session. Status, edit bodies/helpers, Repair the failed action and finish this row live, then Skip with a reason and continue Step. Alternatively restore row entry state before retrying Step. Close after recovery, then one clean Verify.'
     $value.firstAttemptSuccesses=@($Session.attempts | Where-Object {$_.countsAsSuccessfulStep} | ForEach-Object {@{stepIndex=$_.stepIndex;status=$_.status;countsAsSuccessfulStep=$true}})

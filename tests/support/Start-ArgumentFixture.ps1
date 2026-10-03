@@ -3,6 +3,12 @@ $fixture=Join-Path $Root 'dialog.ps1'
 @'
 param($Title,[switch]$Menus)
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -TypeDefinition @"
+using System.Runtime.InteropServices;
+public static class FixtureForegroundPermission {
+    [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int pid);
+}
+"@
 $form=New-Object Windows.Forms.Form
 $form.Text=$Title;$form.Width=700;$form.Height=170
 $field=New-Object Windows.Forms.TextBox
@@ -35,7 +41,7 @@ if ($Menus) {
     [void]$file.DropDownItems.Add($open);[void]$file.DropDownItems.Add($print)
     [void]$menu.Items.Add($file);$form.MainMenuStrip=$menu;$form.Controls.Add($menu)
 }
-$form.Add_Shown({$field.Focus()})
+$form.Add_Shown({$field.Focus();[void][FixtureForegroundPermission]::AllowSetForegroundWindow(-1)})
 $form.Show();$form.Hide()
 [void]$form.ShowDialog()
 '@ | Set-Content -LiteralPath $fixture -Encoding UTF8

@@ -1,6 +1,7 @@
 $script:ModuleRoot = Split-Path -Parent $PSCommandPath
 $script:FrameworkRoot = Split-Path -Parent $script:ModuleRoot
 . (Join-Path $PSScriptRoot 'Exploration.ps1')
+. (Join-Path $PSScriptRoot 'CliWorker.ps1')
 
 function Get-AGTAFrameworkRoot {
     [CmdletBinding()]
@@ -370,8 +371,12 @@ function Invoke-AGTAPotatoJson {
     $processArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PotatoCliPath, $Command) + $Arguments
     $startedAt = Get-Date
     $modulePath = Join-Path (Split-Path -Parent $PotatoCliPath) 'PoTAToCli\PoTAToCli.psm1'
-    $cliModule = Import-Module $modulePath -PassThru -ErrorAction Stop
-    $value = & $cliModule { param($cmd,$values,$root) Invoke-PotatoCliCommand -Command $cmd -Arguments $values -CliRoot $root -AsObject } $Command $Arguments (Split-Path -Parent $PotatoCliPath)
+    if ($env:AGTA_PROVIDER_ISOLATION -eq '1') {
+        $value=Invoke-AGTAIsolatedCliCommand $PotatoCliPath $Command $Arguments $RunRoot
+    } else {
+        $cliModule = Import-Module $modulePath -PassThru -ErrorAction Stop
+        $value = & $cliModule { param($cmd,$values,$root) Invoke-PotatoCliCommand -Command $cmd -Arguments $values -CliRoot $root -AsObject } $Command $Arguments (Split-Path -Parent $PotatoCliPath)
+    }
     $processResult = [pscustomobject]@{exitCode=0;stdout=($value | ConvertTo-Json -Depth 80 -Compress);stderr=''}
     $finishedAt = Get-Date
 
@@ -1100,3 +1105,5 @@ Export-ModuleMember -Function `
     Get-AGTAOpenAITools
 Export-ModuleMember -Function Resolve-AGTACommandArguments, Get-AGTAExplorationPaths, Initialize-AGTAExploration, Add-AGTAExplorationCommand, Complete-AGTAExplorationStep, Complete-AGTAExploration, Test-AGTAExploration, Test-AGTAExplorationCommandSucceeded, Get-AGTAExplorationStatus, Get-AGTAExplorationVerificationInfo, Get-AGTAExplorationWorkflow
 Export-ModuleMember -Function ConvertTo-AGTACompactWindowData
+Export-ModuleMember -Function Assert-AGTABatchRequests, Resolve-AGTABatchArguments
+Export-ModuleMember -Function Invoke-AGTAIsolatedCliCommand

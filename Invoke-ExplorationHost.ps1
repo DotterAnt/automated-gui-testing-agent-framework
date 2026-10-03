@@ -2,6 +2,7 @@
 param([Parameter(Mandatory)] [string]$RunRootToken,
     [ValidateRange(1,3600)] [int]$IdleSeconds=300)
 $ErrorActionPreference='Stop'
+$env:AGTA_PROVIDER_ISOLATION='1'
 # Start-Process from PowerShell 7 can inherit its module search order. This
 # worker deliberately uses Windows PowerShell; prefer its matching modules.
 $env:PSModulePath=(Join-Path $PSHOME 'Modules')+';'+$env:PSModulePath

@@ -1,6 +1,6 @@
 # Persistent exploration tools
 
-`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell. It exposes `agta_explore`, `agta_replay`, `agta_inspect`, `agta_help` and read-only `agta_validate`. One process retains state/ownership. Version 1.4.0 defaults to recorded exploration before code generation and reloads top-level replay helper functions without restarting setup. Plan functions remain isolated from the server. Failed Verify retains live state; first-attempt success qualifies without duplicate execution. Reconnect after updating. CSV/policy, receipt and assertion checks apply; no app-specific routes or extra packages are needed.
+`Invoke-ExplorationMcp.ps1` is a local MCP stdio server using Windows PowerShell. It exposes `agta_explore`, `agta_replay`, `agta_inspect`, `agta_help` and read-only `agta_validate`. Version 1.6.0 adds batch result references, bounded retained CLI workers and replay progress between rows. Recorded exploration remains the default; replay helpers reload without restarting setup. Failed Verify retains live state; unchanged first-attempt success qualifies without repetition. Reconnect after updating. CSV/policy, receipt and assertion checks apply; no app-specific routes or extra packages are needed.
 
 The server exposes GuiNavigation and VisibleControls by default. It rejects AllowShortcuts even with a nonempty policyReason and blocks mutations of older permissive runs; Status remains available for diagnosis. A model-written explanation is not user authorization. Application actions such as Open/Print must use visible menu/button routes. The operator may add `-EnableShortcutPolicy` to server startup only for an explicitly authorized shortcut task; tools cannot enable that capability, and per-run PolicyReason is still required. Do not add this flag for ordinary GUI tests. These are authoring checks, not an execution sandbox for arbitrary shell code.
 
@@ -30,6 +30,8 @@ Replay is also available through the established exploration tool:
 
 Use replayAction Step/Status/Repair/Skip/Close on that same runRoot after failure. Input Repair must include `stepIndex` for the actual CSV row; it does not advance the plan. Bodies and top-level helper functions reload in place; parameters/initializers/imports require Close/Start. Tool arguments are literal JSON values. Failed Verify blocks another full Verify until recovery/Close. Explicit Begin workflowMode Live retains the optional saved-body discovery flow: Batch is read-only and unqualified revisions cannot run standalone. Existing manifests retain their saved mode; use a new run for the new default.
 
+Verify may return IN_PROGRESS after 30 seconds, between completed rows. The same live session remains open: continue Step from nextStepIndex, then Close after the final row. These unchanged first-attempt rows still qualify without another full run. A single row is not interrupted by this progress boundary.
+
 ## Recorded exploration (default)
 
 Begin defaults to RecordedBatch. The shell entrypoint uses the same recorded exploration flow when MCP is unavailable. agta_explore Replay also reaches the replay session if the separate agta_replay name is unavailable.
@@ -46,6 +48,18 @@ Pass these arguments to `agta_explore`; keep its returned runRoot and exploratio
 {"action":"Batch","runRoot":"<returned root>","requests":[{"stepIndex":1,"command":"observe","arguments":["-Depth","0","-MaxElements","1"]}]}
 ~~~
 
+For a known handoff, bind an earlier result directly instead of inventing a placeholder or waiting for another model round trip:
+
+~~~json
+{"action":"Batch","runRoot":"<root>","requests":[
+ {"stepIndex":1,"command":"windows","key":"baseline","arguments":["-Checkpoint"]},
+ {"stepIndex":1,"command":"click","arguments":["-Name","<observed opening control>"]},
+ {"stepIndex":1,"command":"focus","arguments":["-WindowTitle","<observed destination>","-SinceCheckpoint",{"resultRef":"baseline","path":"data.checkpointId"},"-TimeoutMs","15000"]}
+]}
+~~~
+
+Result references select `data.property` paths from earlier successful requests with unique `key` labels in the same batch. Supported value options: SinceCheckpoint, WindowSelectorJson, WindowIdentityJson, ProcessId, NativeWindowHandle, WaitForChangeFrom, WaitForImageMatch. They cannot bind option names, input text, policy or expressions. The entire batch's literal arguments/reference structure is checked before dispatch. A missing runtime property stops remaining commands; inspect the source receipt/Status. The transcript records actual resolved arguments; resolve fresh identities/paths again in saved PowerShell replay. Ordinary strings remain literal.
+
 Batch at most 20 known sequential commands and stop at an observation for unknown transitions. Keep desktop tool calls sequential. Real failure receipts are returned with MCP `isError`; the server remains alive for diagnosis. After a failed batch, further batches for that run are blocked until a successful `Status` request. Review the failed receipt and actual GUI before submitting a separate recovery request. This does not retry or resume queued commands automatically. If the client loses a response, inspect Status/GUI before retrying an action that may already have happened.
 
 Use `RecordSteps` with requests containing stepIndex, route, observedResult and real verificationCommandIds. `Status` and `Complete` need only action/runRoot. Complete still requires all verified rows and cleanup of owned windows; it returns replay references. Finish generation and actual replay using the normal runtime contract. The MCP process can serve another unique run afterward; EOF/client shutdown ends it. Restart it after framework updates. Use one transport per active walkthrough and do not submit shell and MCP mutations concurrently.
@@ -60,11 +74,15 @@ Complete returns the compact tested replay reference inline, with its saved path
 
 ## Timing and diagnosis
 
+`agta_inspect` with `source:"image"`, absolute `imagePath`/`referencePath`, optional observed `region` and clockwise `referenceRotation` measures retained decoded display pixels, including EXIF orientation. It returns error metrics/dimensions without input, file writes, tolerance changes or a qualifying PASS. Use it to diagnose stale captures, wrong regions/orientation or persisted image content before another GUI attempt. Command-history inspection remains the default.
+
 Screenshot commands return PNG/JPEG pixels inline with their receipt and physical region, eliminating a separate image-view call. Up to the last two screenshots of a Batch are attached, each bounded to 10 MiB; the saved files remain authoritative. Batch includeImages false disables attachments. Inspect returned pixels directly; do not call view_image again for the same image. Unsupported formats/oversized images retain their valid receipt/path with an inline warning. Compact windows preserve actionable identity/guards/bounds while full property details stay in the command transcript.
 
 Compact observe presents one `elementColumns` header and `elementRows` arrays. Bounds are `[x,y,width,height]` in physical pixels. Flags contain focused/disabled/offscreen/ambiguous only when applicable; every node, pattern and selector is preserved. The original objects remain in the transcript. Target small observations before broadening depth/node budgets. Original screenshots remain unchanged.
 
 The last exploration response includes `mcpTiming.requestMs`, measuring server dispatch, CLI and receipt work. The client/tool round trip can add time outside it. Startup/import costs are paid once per server connection. Actual UI provider work, literal typing and required postcondition waits remain.
+
+MCP and the Auto shell host retain a separate hidden CLI worker so a synchronous UIA/provider call cannot hold the server forever. Its default command deadline is 30 seconds, extended to an explicit CLI wait plus 5 seconds, up to 70 seconds. Timeout stops only that worker, preserves application windows and returns ProviderTimeout with outcome unknown. No action is retried: inspect Status/actual GUI before further input. A fresh worker handles subsequent commands. `logs/active-provider-command.json` records the command before dispatch and its deadline/state; agta_inspect includes this progress alongside bounded command history. The worker exits with its parent. Direct InProcess/Process shell transports do not use this isolation by default. The deadline bounds CLI calls, not arbitrary script/helper loops; Verify's progress boundary applies between rows, not inside one row.
 
 Run `tests/ExplorationMcp.Tests.ps1 -OutFile <path>` for protocol, policy, receipts/failure/recovery and a sequential read-only latency comparison with fresh-shell direct invocation. It uses isolated CLI state and real receipts. It excludes agent-side MCP transport and one-time initialization; a local benchmark is not a measured full VM workflow speedup.
 

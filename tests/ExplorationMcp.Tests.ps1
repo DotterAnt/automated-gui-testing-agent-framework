@@ -130,6 +130,16 @@ try {
     Check (-not $response.result.isError -and (Values $response)[0].commandCount -eq 2 -and -not $server.HasExited) 'Completing another run killed the server or changed this run.'
     $help=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='runtime';names=@('Invoke-StepCommand','Assert-ZipTextContains','Assert-ImageContainsColors')}}
     Check (-not $help.result.isError -and $help.result.content[0].text -match 'Invoke-StepCommand' -and $help.result.content[0].text -match 'ExpectedEntryCount' -and $help.result.content[0].text -match 'ColorRanges') 'Targeted runtime help failed to publish the content assertions.'
+    Add-Type -AssemblyName System.Drawing
+    $pixels=[Drawing.Bitmap]::new(12,8);$graphics=[Drawing.Graphics]::FromImage($pixels)
+    $pixelPath=Join-Path $root 'existing-image.png'
+    try {$graphics.Clear([Drawing.Color]::Green);$pixels.Save($pixelPath,[Drawing.Imaging.ImageFormat]::Png)} finally {$graphics.Dispose();$pixels.Dispose()}
+    $pixelHash=(Get-FileHash $pixelPath).Hash
+    $inspection=Rpc 'tools/call' @{name='agta_inspect';arguments=@{runRoot=$run;source='image';imagePath=$pixelPath;referencePath=$pixelPath}}
+    $measured=(Values $inspection)[0]
+    Check (-not $inspection.result.isError -and $measured.metrics.meanError -eq 0 -and $measured.metrics.contentSource -eq 'DecodedImagePixels' -and -not $measured.qualifying -and (Get-FileHash $pixelPath).Hash -eq $pixelHash) 'MCP image diagnosis executed GUI input, changed pixels or claimed a qualifying pass.'
+    $inspection=Rpc 'tools/call' @{name='agta_inspect';arguments=@{runRoot=$run;source='image';imagePath=$pixelPath;referencePath=$pixelPath;region=@{x=0;y=0;width=99;height=8}}}
+    Check ($inspection.result.isError) 'MCP image diagnosis accepted an out-of-bounds region.'
     $help=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='cli';names=@('type')}}
     Check (-not $help.result.isError -and $help.result.content[0].text -match 'PathKind') 'Targeted CLI help failed.'
     $help=Rpc 'tools/call' @{name='agta_help';arguments=@{topic='authoring';testCaseCsv=$csv}}
@@ -241,6 +251,33 @@ exit (Get-AGTATestExitCode)
     Check (-not $fullHelp.result.isError -and $fullHelp.result.content[0].text.Length -gt $compactHelp.result.content[0].text.Length -and ($compactHelp.result.content[0].text | ConvertFrom-Json).data.commands.type.usage -match 'PathKind') 'Full behavioral help was unavailable or compact signatures were lost.'
     $ping=Rpc ping @{}
     Check (-not $ping.error -and $ping.result -and -not $server.HasExited) 'MCP did not recover after protocol errors.'
+    # An uninterruptible provider must not monopolize the stdio server after a
+    # client timeout. This fixture has no GUI or external application effects.
+    $stalledRoot=Join-Path $root 'stalled-cli';$stalledModule=Join-Path $stalledRoot 'PoTAToCli'
+    [void][IO.Directory]::CreateDirectory($stalledModule)
+    $stalledCli=Join-Path $stalledRoot 'potato.ps1';'# Inert fixture entrypoint' | Set-Content $stalledCli
+    @'
+function Invoke-PotatoCliCommand {
+    param($Command,$Arguments,$CliRoot,[switch]$AsObject)
+    if ($Command -eq 'observe') {[Threading.Thread]::Sleep(120000)}
+    @{ok=$true;command=$Command;data=@{pid=$PID};durationMs=1}
+}
+Export-ModuleMember -Function Invoke-PotatoCliCommand
+'@ | Set-Content (Join-Path $stalledModule 'PoTAToCli.psm1')
+    $stalledRun=Join-Path $root 'stalled-run'
+    Tool @{action='Begin';runRoot=$stalledRun;testCaseCsv=$csv;potatoCliPath=$stalledCli} | Out-Null
+    $stallWatch=[Diagnostics.Stopwatch]::StartNew()
+    $stalled=Tool @{action='Batch';runRoot=$stalledRun;requests=@(@{stepIndex=1;command='observe';arguments=@()},@{stepIndex=1;command='state';arguments=@()});includeImages=$false}
+    $stalledValue=(Values $stalled)[0]
+    Check ($stalled.result.isError -and $stalledValue.error.type -eq 'ProviderTimeout' -and $stalledValue.outcome -eq 'unknown' -and $stallWatch.ElapsedMilliseconds -lt 45000 -and @(Values $stalled).Count -eq 1) 'A stalled provider left MCP blocked or dispatched the rest of the batch.'
+    $responsive=Tool @{action='Status';runRoot=$stalledRun}
+    Check (-not $responsive.result.isError -and (Values $responsive)[0].commandCount -eq 1 -and -not $server.HasExited) 'Status remained blocked behind the timed-out provider.'
+    $progress=Rpc 'tools/call' @{name='agta_inspect';arguments=@{runRoot=$stalledRun;source='exploration'}}
+    $progressValue=(Values $progress)[0].providerProgress
+    Check ($progressValue.state -eq 'TimedOut' -and $progressValue.command -eq 'observe' -and -not (Get-Process -Id $progressValue.providerPid -ErrorAction SilentlyContinue)) 'MCP timeout lost active-command progress or left its provider running.'
+    $healthy=Tool @{action='Batch';runRoot=$stalledRun;requests=@(@{stepIndex=1;command='state';arguments=@()})}
+    $ownedProviderPid=(Values $healthy)[0].data.pid
+    Check (-not $healthy.result.isError -and $ownedProviderPid -ne $progressValue.providerPid -and @(Get-Content (Join-Path $stalledRun 'logs\exploration-commands.jsonl')).Count -eq 2) 'MCP recovery retried the failed command or could not retain a fresh provider.'
     if ($Gui) {
         $title='AGTA MCP fixture '+[guid]::NewGuid().ToString('N')
         $child=& (Join-Path $PSScriptRoot 'support\Start-ArgumentFixture.ps1') $root $title -Menus
@@ -250,22 +287,46 @@ exit (Get-AGTATestExitCode)
             @{stepIndex=1;command='focus';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title,'-TimeoutMs','10000')},
             @{stepIndex=1;command='windows';arguments=@('-Foreground','-WindowTitle',$title,'-TimeoutMs','3000')})}
         $ready=(Values $response)[-1]
-        Check (-not $response.result.isError -and $ready.data.count -eq 1) 'MCP could not establish real fixture foreground readiness.'
+        Check (-not $response.result.isError -and $ready.data.count -eq 1) ('MCP could not establish real fixture foreground readiness: '+$response.result.content[0].text)
+        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
+            @{stepIndex=1;command='windows';key='current';arguments=@('-Foreground','-WindowTitle',$title,'-TimeoutMs','1000')},
+            @{stepIndex=1;command='observe';arguments=@('-Scope','ForegroundWindow','-WindowSelectorJson',@{resultRef='current';path='data.foregroundSelector'},'-FallbackReason','Inspect fixture','-FallbackEvidence','Observed current fixture','-Depth','0','-MaxElements','1')})}
+        Check (-not $response.result.isError -and (Values $response)[1].data.root.nativeWindowHandle -eq $ready.data.foregroundSelector.NativeWindowHandle) 'MCP did not bind the fresh window guard inside one batch.'
+        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
+            @{stepIndex=1;command='windows';key='baseline';arguments=@('-Checkpoint')},
+            @{stepIndex=1;command='click';arguments=@('-Name','Fixture File')},
+            @{stepIndex=1;command='click';arguments=@('-Name','Fixture Open command')},
+            @{stepIndex=1;command='focus';key='newWindow';arguments=@('-WindowTitle','Fixture Open','-SinceCheckpoint',@{resultRef='baseline';path='data.checkpointId'},'-TimeoutMs','3000')},
+            @{stepIndex=1;command='close-window';arguments=@('-WindowIdentityJson',@{resultRef='newWindow';path='data.ownedWindow'})})}
+        $bound=Values $response
+        Check (-not $response.result.isError -and $bound.Count -eq 5 -and $bound[3].data.ownedWindow -and $bound[4].data.closed -eq 1) 'MCP failed to register and close only its new handoff window using returned identities.'
+        $receipts=@(Get-Content (Join-Path $guiRun 'logs\exploration-commands.jsonl') | ForEach-Object {$_ | ConvertFrom-Json})
+        $focusReceipt=@($receipts | Where-Object {$_.command -eq 'focus'})[-1]
+        Check ($focusReceipt.arguments[3] -ceq $bound[0].data.checkpointId -and ($focusReceipt.arguments -join ' ') -notmatch 'resultRef') 'Replay receipts kept a placeholder instead of the actual tested checkpoint argument.'
+        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
+            @{stepIndex=1;command='focus';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title)},
+            @{stepIndex=1;command='focus';arguments=@('-SinceCheckpoint',@{resultRef='notEarlier';path='data.checkpointId'})})}
+        Check ($response.result.isError -and (Values $response).Count -eq 1 -and (Values $response)[0].error -match 'resultRef') 'Invalid later binding dispatched the earlier focus instead of rejecting the whole batch.'
+        Tool @{action='Status';runRoot=$guiRun} | Out-Null
+        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='click';arguments=@('-Name','Fixture filename','-Method','Mouse')})}
+        Check (-not $response.result.isError) 'The handoff fixture did not restore its filename focus for the following typing checks.'
         $imagePath=Join-Path $root 'inline.png'
-        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='screenshot';arguments=@('-OutFile',$imagePath,'-X','0','-Y','0','-Width','100','-Height','100')})}
+        $fixtureBounds=$ready.data.windows[0].boundingRectangle
+        $stableCapture=@('-X',([string]($fixtureBounds.x+10)),'-Y',([string]($fixtureBounds.y+130)),'-Width','100','-Height','20')
+        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='screenshot';arguments=@('-OutFile',$imagePath)+$stableCapture})}
         $blocks=@($response.result.content | Where-Object {$_.type -eq 'image'})
         Check (-not $response.result.isError -and $blocks.Count -eq 1 -and $blocks[0].mimeType -eq 'image/png' -and $blocks[0].data -ceq [Convert]::ToBase64String([IO.File]::ReadAllBytes($imagePath))) 'MCP did not return exact captured screenshot pixels with the receipt.'
         Check ($response.result.content[1].text -match 'physical region' -and (Values $response)[0].data.path -eq $imagePath) 'Inline screenshot lost coordinate origin or its authoritative receipt.'
-        $response=Tool @{action='Batch';runRoot=$guiRun;includeImages=$false;requests=@(@{stepIndex=1;command='screenshot';arguments=@('-OutFile',$imagePath,'-X','0','-Y','0','-Width','100','-Height','100')})}
+        $response=Tool @{action='Batch';runRoot=$guiRun;includeImages=$false;requests=@(@{stepIndex=1;command='screenshot';arguments=@('-OutFile',$imagePath)+$stableCapture})}
         Check (-not $response.result.isError -and $response.result.content.Count -eq 1) 'Text-only screenshot option still returned image data.'
         $waitedImage=Join-Path $root 'unmet-visual-wait.png'
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(
-            @{stepIndex=1;command='screenshot';arguments=@('-OutFile',$waitedImage,'-X','0','-Y','0','-Width','100','-Height','100','-WaitForChangeFrom',$imagePath,'-ChangeRegionJson',@{x=0;y=0;width=100;height=100},'-TimeoutMs','0','-StableMs','0')},
+            @{stepIndex=1;command='screenshot';arguments=$stableCapture+@('-OutFile',$waitedImage,'-WaitForChangeFrom',$imagePath,'-ChangeRegionJson',@{x=0;y=0;width=100;height=20},'-TimeoutMs','0','-StableMs','0')},
             @{stepIndex=1;command='help';arguments=@('-Topic','click')}
         )}
         Check ($response.result.isError -and @(Values $response).Count -eq 1 -and -not (Values $response)[0].data.conditionMet -and -not (Values $response)[0].verification.eligible -and (Test-Path $waitedImage)) 'MCP continued after an unmet visual wait or lost its final frame.'
         Tool @{action='Status';runRoot=$guiRun} | Out-Null
-        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='screenshot';arguments=@('-OutFile',(Join-Path $root 'expected-match.png'),'-X','0','-Y','0','-Width','100','-Height','100','-WaitForImageMatch',$imagePath,'-MatchRegionJson',@{x=0;y=0;width=100;height=100},'-TimeoutMs','1000','-StableMs','0')})}
+        $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='screenshot';arguments=$stableCapture+@('-OutFile',(Join-Path $root 'expected-match.png'),'-WaitForImageMatch',$imagePath,'-MatchRegionJson',@{x=0;y=0;width=100;height=20},'-TimeoutMs','1000','-StableMs','0')})}
         Check (-not $response.result.isError -and (Values $response)[0].data.conditionMet -and (Values $response)[0].data.visualWait.mode -eq 'ExpectedImage' -and @($response.result.content | Where-Object {$_.type -eq 'image'}).Count -eq 1) 'MCP lost expected-image wait options, object region or retained pixels.'
         $response=Tool @{action='Batch';runRoot=$guiRun;requests=@(@{stepIndex=1;command='windows';arguments=@('-ProcessId',"$($child.Id)",'-WindowTitle',$title,'-WaitForNotExists','-TimeoutMs','0')})}
         Check ($response.result.isError -and -not (Values $response)[0].data.conditionMet -and -not (Values $response)[0].verification.eligible) 'A real open window passed MCP disappearance evidence.'
@@ -389,6 +450,9 @@ exit (Get-AGTATestExitCode)
     }
     $server.StandardInput.Close()
     Check ($server.WaitForExit(5000) -and $server.ExitCode -eq 0) 'EOF left an MCP worker running.'
+    $exitWatch=[Diagnostics.Stopwatch]::StartNew()
+    while ((Get-Process -Id $ownedProviderPid -ErrorAction SilentlyContinue) -and $exitWatch.ElapsedMilliseconds -lt 4000) {Start-Sleep -Milliseconds 50}
+    Check (-not (Get-Process -Id $ownedProviderPid -ErrorAction SilentlyContinue)) 'Retained CLI worker survived its MCP parent exit.'
     $primaryServerId=$server.Id;$server.Dispose()
     # Operator opt-in is a startup setting, never a tool-call argument. No GUI
     # shortcut is sent in this capability/authorization test.

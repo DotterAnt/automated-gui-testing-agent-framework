@@ -18,7 +18,7 @@ function ConvertTo-AGTAObservationRows {
         # A unary comma preserves each array as a row, including one-node trees.
         ,@($element.depth,$element.name,$element.id,$element.role,$element.className,
             @($element.bounds.x,$element.bounds.y,$element.bounds.width,$element.bounds.height),
-            @($element.patterns),$element.selector,$flags,@($element.propertyErrors))
+            @($element.patterns),$element.selector,$flags,@($element.propertyErrors | Where-Object {$null -ne $_}))
     })
     return $result
 }
@@ -83,6 +83,61 @@ function Resolve-AGTACommandArguments {
         }
     }
     return $values
+}
+
+function Test-AGTABatchResultReference {
+    param($Value)
+    return [bool](($Value -is [Collections.IDictionary] -and $Value.Contains('resultRef')) -or
+        ($Value -is [pscustomobject] -and $Value.PSObject.Properties.Name -contains 'resultRef'))
+}
+
+function Assert-AGTABatchRequests {
+    param([object[]]$Requests,[int]$StepCount,[string]$InteractionPolicy)
+    $keys=@{}
+    foreach ($request in $Requests) {
+        if ($request.stepIndex -lt 1 -or $request.stepIndex -gt $StepCount -or -not $request.command) {throw 'Every command needs a valid stepIndex and command; no action was dispatched.'}
+        $arguments=@($request.arguments)
+        $probe=@(for ($i=0;$i -lt $arguments.Count;$i++) {
+            $value=$arguments[$i]
+            if (Test-AGTABatchResultReference $value) {
+                # Only identity/evidence values may be bound, never command names,
+                # option names, policy, shortcuts or input text. No expressions.
+                $members=if ($value -is [Collections.IDictionary]) {@($value.Keys)} else {@($value.PSObject.Properties.Name)}
+                if ($members.Count -ne 2 -or 'path' -notin $members -or $value.resultRef -isnot [string] -or
+                    -not $keys.ContainsKey($value.resultRef) -or $value.path -isnot [string] -or $value.path -cnotmatch '^data(?:\.[A-Za-z][A-Za-z0-9]*)+$' -or
+                    $i -eq 0 -or $arguments[$i-1] -isnot [string] -or
+                    $arguments[$i-1] -notmatch '^-(SinceCheckpoint|WindowSelectorJson|WindowIdentityJson|ProcessId|NativeWindowHandle|WaitForChangeFrom|WaitForImageMatch)$') {
+                    throw 'Invalid batch resultRef. Use an earlier unique key, a data.property path and an identity/evidence value option. No action was dispatched.'
+                }
+                # Validate all literal arguments/policies before any dispatch.
+                if ($arguments[$i-1] -match 'Json$') {'{}'} else {'reference-value'}
+            } else {$value}
+        })
+        [void](Resolve-AGTACommandArguments $request.command $probe -InteractionPolicy $InteractionPolicy)
+        if ($request.key) {
+            if ($request.key -isnot [string] -or $request.key -cnotmatch '^[A-Za-z][A-Za-z0-9_-]{0,47}$' -or $keys.ContainsKey($request.key)) {throw 'Batch keys must be unique identifiers of 1..48 characters. No action was dispatched.'}
+            $keys[$request.key]=$true
+        }
+    }
+}
+
+function Resolve-AGTABatchArguments {
+    param([string]$Command,[object[]]$Arguments,[Collections.IDictionary]$Results,[string]$InteractionPolicy)
+    $resolved=@(foreach ($value in $Arguments) {
+        if (Test-AGTABatchResultReference $value) {
+            if (-not $Results.Contains($value.resultRef) -or -not $Results[$value.resultRef].ok) {throw 'Batch resultRef has no successful source. No further action was dispatched.'}
+            $node=$Results[$value.resultRef]
+            foreach ($property in $value.path.Split('.')) {
+                if ($null -eq $node) {throw "Batch resultRef $($value.resultRef).$($value.path) is missing. Inspect the returned source receipt; no further action was dispatched."}
+                if ($node -is [Collections.IDictionary] -and $node.Contains($property)) {$node=$node[$property]}
+                elseif ($node -isnot [Collections.IDictionary] -and $node.PSObject.Properties.Name -contains $property) {$node=$node.$property}
+                else {throw "Batch resultRef $($value.resultRef).$($value.path) is missing. Inspect the returned source receipt; no further action was dispatched."}
+            }
+            if ($null -eq $node) {throw 'Batch resultRef resolved to null. No further action was dispatched.'}
+            $node
+        } else {$value}
+    })
+    Resolve-AGTACommandArguments $Command $resolved -InteractionPolicy $InteractionPolicy
 }
 
 function Get-AGTAExplorationPaths {
@@ -249,7 +304,7 @@ function Get-AGTAExplorationWorkflow {
     $paths=Get-AGTAExplorationPaths $RunRoot
     $m=Get-Content -LiteralPath $paths.manifest -Raw | ConvertFrom-Json
     $missing=@(1..$m.stepCount | Where-Object {$_ -notin @($m.steps.stepIndex)})
-    $next='Develop/test the next saved StepBodies row with agta_replay, or continue recorded Batch exploration. Review and record real verification receipts; incomplete exploration cannot qualify a full result.'
+    $next='Continue Batch exploration of the missing CSV rows. Review actual expected results and RecordSteps. Complete exploration before generating a replay.'
     if ($m.workflowMode -eq 'Live') {$next='Live: Replay Start/Step tests saved bodies; Status/Repair handles failures. Batch is read-only. Review RecordSteps, then Close.'}
     if ($m.completed) {
         $next='Exploration is complete. A clean first-attempt live plan may already qualify on Close; otherwise Verify the final saved revision after cleanup. Preflight alone is not a passed test.'

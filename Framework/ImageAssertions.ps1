@@ -1,3 +1,21 @@
+function ConvertTo-AGTADisplayOrientation {
+    param([Drawing.Image]$Image)
+    # GDI+ exposes stored pixels. Display applications also apply EXIF 0x0112.
+    # Normalize the decoded copy only, before region/explicit rotation checks.
+    if (0x0112 -notin $Image.PropertyIdList) {return 1}
+    $property=$Image.GetPropertyItem(0x0112)
+    if ($property.Type -ne 3 -or $property.Value.Length -ne 2) {throw 'Invalid EXIF orientation metadata.'}
+    $orientation=[int]$property.Value[0]+256*[int]$property.Value[1]
+    if ($orientation -notin 1..8) {$orientation=256*[int]$property.Value[0]+[int]$property.Value[1]}
+    $transform=switch ($orientation) {
+        1 {'RotateNoneFlipNone'}; 2 {'RotateNoneFlipX'}; 3 {'Rotate180FlipNone'}; 4 {'RotateNoneFlipY'}
+        5 {'Rotate90FlipX'}; 6 {'Rotate90FlipNone'}; 7 {'Rotate270FlipX'}; 8 {'Rotate270FlipNone'}
+        default {throw 'Invalid EXIF orientation metadata.'}
+    }
+    if ($orientation -ne 1) {$Image.RotateFlip([Drawing.RotateFlipType]::$transform)}
+    return $orientation
+}
+
 function Measure-ImageRegionMatch {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string]$Path,
@@ -10,7 +28,7 @@ function Measure-ImageRegionMatch {
     Add-Type -AssemblyName System.Drawing
     if (-not ('AGTAImagePixels' -as [type])) {Add-Type -Path (Join-Path $PSScriptRoot 'ImagePixels.cs')}
     $resources=New-Object 'Collections.Generic.List[IDisposable]'
-    $bitmaps=@();$locks=@();$images=@();$watch=[Diagnostics.Stopwatch]::StartNew()
+    $bitmaps=@();$locks=@();$images=@();$orientations=@();$watch=[Diagnostics.Stopwatch]::StartNew()
     try {
         foreach ($file in @($Path,$ReferencePath)) {
             do {
@@ -24,11 +42,13 @@ function Measure-ImageRegionMatch {
             if ($stream.Length -gt $MaxBytes) {throw 'Image exceeds MaxBytes.'}
             $image=[Drawing.Image]::FromStream($stream,$false,$false);$resources.Add($image)
             if ([long]$image.Width*$image.Height -gt $MaxPixels) {throw 'Decoded image exceeds MaxPixels.'}
+            $orientations+=ConvertTo-AGTADisplayOrientation $image
             $images+=,$image
         }
         if ($ReferenceRotation) {
             # Transform only a decoded reference in memory. Never create or
-            # change an expected artifact, and never rotate the actual output.
+            # change an expected artifact. EXIF normalization above describes
+            # the actual display; this additional rotation belongs to expected.
             $images[1].RotateFlip([Drawing.RotateFlipType]::("Rotate"+$ReferenceRotation+'FlipNone'))
         }
         $rectangle=[Drawing.Rectangle]::new(0,0,$images[0].Width,$images[0].Height)
@@ -60,6 +80,8 @@ function Measure-ImageRegionMatch {
         }
         $comparison=[AGTAImagePixels]::Compare($locks[0].Scan0,$locks[0].Stride,$locks[1].Scan0,$locks[1].Stride,128)
         $info=[pscustomobject]@{path=$Path;referencePath=$ReferencePath;referenceRotation=$ReferenceRotation;
+            actualExifOrientation=$orientations[0];referenceExifOrientation=$orientations[1];
+            actualDisplayWidth=$images[0].Width;actualDisplayHeight=$images[0].Height;
             region=@{x=$rectangle.X;y=$rectangle.Y;width=$rectangle.Width;height=$rectangle.Height};
             referenceWidth=$images[1].Width;referenceHeight=$images[1].Height;
             aspectError=$aspectError;meanError=$comparison.meanError;maxTileError=$comparison.maxTileError;contentSource='DecodedImagePixels'}

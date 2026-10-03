@@ -2,6 +2,7 @@
 param([switch]$EnableShortcutPolicy)
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
+$env:AGTA_PROVIDER_ISOLATION='1'
 $env:PSModulePath=(Join-Path $PSHOME 'Modules')+';'+$env:PSModulePath
 [Console]::InputEncoding=[Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
@@ -15,7 +16,7 @@ $planSessions=@{}
 $availablePolicies=@('GuiNavigation','VisibleControls')
 if ($EnableShortcutPolicy) {$availablePolicies+=,'AllowShortcuts'}
 $tools=@(
-    @{name='agta_explore';description='Explore first: Begin, Batch observed GUI actions, review RecordSteps, clean owned windows, Complete. No saved script is needed for exploration. Then generate the replay from tested receipts and run it once through Replay Verify; failure retains the app for Status/Repair/Step/Skip recovery. Use visible controls; agent reasons cannot authorize shortcuts.';
+    @{name='agta_explore';description='Explore first: Begin, Batch observed GUI actions, review RecordSteps, clean owned windows, Complete. No saved script is needed for exploration. Then generate from tested receipts and Replay Verify. IN_PROGRESS retains the session: continue Step then Close. Failure retains state for Status/Repair/Step/Skip. ProviderTimeout has unknown action outcome; inspect before further input. Use visible controls; reasons cannot authorize shortcuts.';
         inputSchema=@{type='object';required=@('action','runRoot');additionalProperties=$false;properties=@{
             action=@{type='string';enum=@('Begin','Batch','RecordSteps','Status','Complete','Replay')};runRoot=@{type='string'};
             workflowMode=@{type='string';enum=@('RecordedBatch','Live');description='Begin only. RecordedBatch is default: explore before writing code. Live explicitly opts into saved-body development; Batch is read-only in Live.'};
@@ -23,7 +24,7 @@ $tools=@(
             scriptPath=@{type='string'};stepIndex=@{type='integer';minimum=1;description='Replay Repair: required for GUI input; actual CSV row for receipts. Does not advance the pending row.'};reason=@{type='string'};
             testCaseCsv=@{type='string'};potatoCliPath=@{type='string'};
             interactionPolicy=@{type='string';enum=$availablePolicies};policyReason=@{type='string';description='Records existing user/testcase authorization, never an agent justification. Does not enable shortcut capability.'};
-            requests=@{type='array';items=@{type='object'};description='Batch: {stepIndex,command,arguments:[]} objects. RecordSteps: {stepIndex,route,observedResult,verificationCommandIds:[]} objects. Structured *Json argument values are supported.'};
+            requests=@{type='array';items=@{type='object'};description='Batch: {stepIndex,command,arguments:[],key?}. Identity/evidence argument values may use {resultRef:"earlierKey",path:"data.checkpointId"} to bind a previous result in this batch. RecordSteps: {stepIndex,route,observedResult,verificationCommandIds:[]}. Structured *Json values are supported.'};
             includeImages=@{type='boolean';description='Batch screenshots return their original PNG/JPEG pixels inline by default (last two, <=10 MiB each), alongside receipt/physical region. Inspect these directly without another file-view call. Set false for text-only receipts.'}
         }}}
     @{name='agta_validate';description='Optional read-only standalone replay preflight using saved CSV/policy/manifest; completed exploration required. agta_replay Step/Verify and standalone scripts validate internally, so do not duplicate this check before each execution. Parses source without executing it; never substitutes for a passed run.';
@@ -36,7 +37,7 @@ $tools=@(
             runRoot=@{type='string';description='Replay topic: completed run whose tested route reference should be restored after context compaction.'};stepIndex=@{type='integer';minimum=1;description='Replay topic: return only this CSV row; omit for all rows.'};
             detail=@{type='string';enum=@('signatures','full');description='Targeted help defaults to compact signatures; request full only for unresolved behavior.'}
         }}}
-    @{name='agta_replay';description='After recorded exploration, Verify runs the saved script once and stops at failure with live state retained. Inspect Status, edit bodies/helpers in place, Repair the failed action with its CSV stepIndex, then Step after restoring row entry state or Skip a manually finished row and continue. Do not Close/Start for selector/helper edits or restart successful rows. First-attempt successes count; clean full execution qualifies without repetition. Repaired sessions remain diagnostic and need one final clean Verify.';
+    @{name='agta_replay';description='After exploration, Verify runs the saved script once. IN_PROGRESS retains the session: continue Step from nextStepIndex, then Close. Failure retains state: Status, edit bodies/helpers, Repair with actual CSV stepIndex, then Step after restoring row entry state or Skip a manually finished row and continue. Never restart successful rows for helper/selector edits. First-attempt full success qualifies without repetition. Repaired sessions need one final clean Verify. ProviderTimeout has unknown outcome; inspect before input.';
         inputSchema=@{type='object';required=@('action','runRoot');additionalProperties=$false;properties=@{
             action=@{type='string';enum=@('Start','Step','Repair','Skip','Status','Close','Verify')};runRoot=@{type='string'};
             scriptPath=@{type='string';description='Absolute template-based script path for Start/Verify; Step reloads saved bodies and helper functions without resetting state.'};
@@ -44,9 +45,11 @@ $tools=@(
             requests=@{type='array';minItems=1;maxItems=20;items=@{type='object';required=@('command','arguments');additionalProperties=$false;properties=@{command=@{type='string'};arguments=@{type='array'}}}};
             includeImages=@{type='boolean';description='Return up to two retained screenshot evidence files inline; default true.'}
         }}}
-    @{name='agta_inspect';description='Read bounded structured command diagnostics instead of dumping raw JSONL. Keeps actual error, arguments, target, focus, image metrics and up to 20 discovery elements; no duplicate raw/parsed envelopes. Full records stay on disk.';
+    @{name='agta_inspect';description='Read bounded structured command diagnostics, or source image to measure retained image pixels against a reference without rerunning GUI input. Returns metrics/display orientation, never a qualifying PASS. Full command records stay on disk.';
         inputSchema=@{type='object';required=@('runRoot');additionalProperties=$false;properties=@{
-            runRoot=@{type='string'};source=@{type='string';enum=@('exploration','replay')};last=@{type='integer';minimum=1;maximum=20};stepIndex=@{type='integer';minimum=1}
+            runRoot=@{type='string'};source=@{type='string';enum=@('exploration','replay','image')};last=@{type='integer';minimum=1;maximum=20};stepIndex=@{type='integer';minimum=1};
+            imagePath=@{type='string'};referencePath=@{type='string'};referenceRotation=@{type='integer';enum=@(0,90,180,270)};
+            region=@{type='object';description='Optional observed rectangle x,y,width,height in decoded display pixels of imagePath. No region means whole image.'}
         }}}
 )
 function Invoke-McpTool($Name,$Arguments) {
@@ -169,16 +172,27 @@ function Invoke-McpTool($Name,$Arguments) {
         $responses=@($value | ForEach-Object {if ($_ -is [string]) {$_} else {$_ | ConvertTo-Json -Depth 70 -Compress}})
         if (@($responses | ForEach-Object {$_ | ConvertFrom-Json} | Where-Object {$_.ok -eq $false}).Count) {$global:LASTEXITCODE=1}
     } elseif ($Name -eq 'agta_inspect') {
-        foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin @('runRoot','source','last','stepIndex')) {throw "Unknown inspection argument: $property"}}
+        foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin @('runRoot','source','last','stepIndex','imagePath','referencePath','referenceRotation','region')) {throw "Unknown inspection argument: $property"}}
         if (-not $Arguments.runRoot -or -not [IO.Path]::IsPathRooted($Arguments.runRoot)) {throw 'Inspection needs an absolute runRoot.'}
         $source=if ($Arguments.source) {$Arguments.source} else {'replay'}
-        if ($source -notin @('exploration','replay')) {throw 'Inspection source must be exploration or replay.'}
-        $path=if ($source -eq 'exploration') {Join-Path $Arguments.runRoot 'logs\exploration-commands.jsonl'} else {
-            $file=Get-ChildItem -LiteralPath (Join-Path $Arguments.runRoot 'logs') -Filter 'potato-commands-*.jsonl' -File | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-            if ($file) {$file.FullName} else {$null}
+        if ($source -notin @('exploration','replay','image')) {throw 'Inspection source must be exploration, replay or image.'}
+        if ($source -eq 'image') {
+            if ($Arguments.PSObject.Properties.Name -contains 'last' -or $Arguments.PSObject.Properties.Name -contains 'stepIndex') {throw 'Image inspection does not take command-history filters.'}
+            foreach ($file in @($Arguments.imagePath,$Arguments.referencePath)) {if (-not $file -or -not [IO.Path]::IsPathRooted($file)) {throw 'Image inspection needs absolute imagePath and referencePath.'}}
+            $rotation=if ($null -ne $Arguments.referenceRotation) {$Arguments.referenceRotation} else {0}
+            $metrics=Measure-ImageRegionMatch -Path $Arguments.imagePath -ReferencePath $Arguments.referencePath -Region $Arguments.region -ReferenceRotation $rotation
+            $value=@{ok=$true;metrics=$metrics;qualifying=$false;note='Read-only pixel metrics. Review against the required expectation; retain content assertions in replay. No GUI input or file writes.'}
+        } else {
+            if (@('imagePath','referencePath','referenceRotation','region') | Where-Object {$_ -in $Arguments.PSObject.Properties.Name}) {throw 'Image arguments require source image.'}
+            $path=if ($source -eq 'exploration') {Join-Path $Arguments.runRoot 'logs\exploration-commands.jsonl'} else {
+                $file=Get-ChildItem -LiteralPath (Join-Path $Arguments.runRoot 'logs') -Filter 'potato-commands-*.jsonl' -File | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+                if ($file) {$file.FullName} else {$null}
+            }
+            $last=if ($null -ne $Arguments.last) {[int]$Arguments.last} else {3}
+            $value=@{ok=$true;commands=@(Get-AGTACommandDiagnostics $path -Last $last -StepIndex $Arguments.stepIndex);fullLogPath=$path}
+            $active=Join-Path $Arguments.runRoot 'logs\active-provider-command.json'
+            if (Test-Path -LiteralPath $active) {$value.providerProgress=[IO.File]::ReadAllText($active) | ConvertFrom-Json}
         }
-        $last=if ($null -ne $Arguments.last) {[int]$Arguments.last} else {3}
-        $value=@{ok=$true;commands=@(Get-AGTACommandDiagnostics $path -Last $last -StepIndex $Arguments.stepIndex);fullLogPath=$path}
         $responses=@(($value | ConvertTo-Json -Depth 40 -Compress))
     } elseif ($Name -eq 'agta_help') {
         foreach ($property in $Arguments.PSObject.Properties.Name) {if ($property -cnotin @('topic','names','testCaseCsv','detail','runRoot','stepIndex')) {throw "Unknown help argument: $property"}}
@@ -271,7 +285,7 @@ while ($null -ne ($line=[Console]::ReadLine())) {
                     'initialize' {
                         if ($request.params.protocolVersion -isnot [string] -or -not $request.params.protocolVersion) {throw 'Initialize requires protocolVersion.'}
                         $version=if ($request.params.protocolVersion -in @('2024-11-05','2025-03-26','2025-06-18')) {$request.params.protocolVersion} else {'2025-06-18'}
-                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.5.0'}}
+                        $reply.result=@{protocolVersion=$version;capabilities=@{tools=@{listChanged=$false}};serverInfo=@{name='agta-exploration';version='1.6.0'}}
                         $negotiated=$true;$ready=$false
                     }
                     'ping' {$reply.result=@{}}

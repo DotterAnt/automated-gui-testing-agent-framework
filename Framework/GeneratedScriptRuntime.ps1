@@ -171,7 +171,8 @@ function Invoke-PotatoJson {
     $parsed = $null
     try {
         if ($context.Transport -eq 'InProcess') {
-            $parsed = & $context.CliModule { param($cmd,$values,$root) Invoke-PotatoCliCommand -Command $cmd -Arguments $values -CliRoot $root -AsObject } $Command $effectiveArgs (Split-Path -Parent $context.PotatoCliPath)
+            if ($env:AGTA_PROVIDER_ISOLATION -eq '1') {$parsed=Invoke-AGTAIsolatedCliCommand $context.PotatoCliPath $Command $effectiveArgs $context.RunRoot}
+            else {$parsed = & $context.CliModule { param($cmd,$values,$root) Invoke-PotatoCliCommand -Command $cmd -Arguments $values -CliRoot $root -AsObject } $Command $effectiveArgs (Split-Path -Parent $context.PotatoCliPath)}
         }
         else {
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $context.PotatoCliPath $Command @effectiveArgs 2>&1 | ForEach-Object { $raw += $_ }
@@ -448,6 +449,12 @@ function Register-OpenedProcess {
     param([Parameter(Mandatory)] [object] $StartResult)
     Assert-PotatoOk $StartResult
     $ownedId = $StartResult.data.ownedProcessId
+    if (-not $ownedId -and $StartResult.data.ownedWindow) {
+        $ticket=$StartResult.data.ownedWindow
+        if (-not $ticket.nativeWindowHandle -or -not $ticket.windowToken -or -not $ticket.processStartTime) {throw 'Start returned an incomplete ownedWindow identity.'}
+        if (-not @($script:AGTAOpenedWindows | Where-Object {$_.windowToken -ceq $ticket.windowToken -and $_.nativeWindowHandle -eq $ticket.nativeWindowHandle}).Count) {$script:AGTAOpenedWindows+=,$ticket}
+        return
+    }
     if (-not $ownedId) { throw 'Start returned no ownedProcessId. Invoke-StepCommand registers valid ownership automatically; inspect the start result instead of bypassing scoped cleanup.' }
     $owned = Get-Process -Id $ownedId -ErrorAction SilentlyContinue
     # Legacy launchers can exit between command return and registration.

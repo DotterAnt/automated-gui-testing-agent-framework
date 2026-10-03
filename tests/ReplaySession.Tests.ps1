@@ -61,6 +61,14 @@ try {
     $cli=Join-Path (Split-Path $frameworkRoot) 'potato-cli\potato.ps1'
     $good='{param([ref]$Commands,[ref]$Evidence) $State.value++; $clicked=Invoke-StepCommand $Commands click @("-Name","Fixture"); Assert-PotatoOk $clicked; $read=Invoke-StepCommand $Commands read @("-Name","Fixture"); Assert-TextContains $read -Expected "Fixture"; Assert-ExpectedResult ($State.value -eq 2) "State incremented"}'
     $bad='{param([ref]$Commands,[ref]$Evidence) throw "fixture failure"}'
+    $run=Join-Path $root 'yield';$path=New-Plan $run $good
+    $session=Import-AGTAPlanSession $run $path;$sessions+=,$session;Install-Fixture $session
+    $progress=Invoke-AGTAPlanVerification $session -MaxActiveMs 1
+    Check ($progress.ok -and $progress.status -eq 'IN_PROGRESS' -and $progress.nextStepIndex -eq 2 -and $progress.firstAttemptSuccesses.Count -eq 1 -and -not $session.closed) 'Bounded Verify lost live state or treated progress as completion.'
+    Record $session $progress.lastCompletedStep
+    foreach ($index in 2..3) {$result=Invoke-AGTAPlanStep $session;Record $session $result}
+    $closed=Close-AGTAPlanSession $session | ConvertFrom-Json
+    Check ($closed.qualifying -and $closed.summary.passed -eq 3 -and $session.attempts.Count -eq 3 -and (& $session.module {$State.value}) -eq 2) 'Yielded first-attempt verification required a redundant run or reran its prefix.'
     $run=Join-Path $root 'clean';$path=New-Plan $run $good
     Reject {Import-AGTAPlanSession $run $path Replay} 'Qualifying replay accepted incomplete exploration.' | Out-Null
     $session=Import-AGTAPlanSession $run $path;$sessions+=,$session;Install-Fixture $session

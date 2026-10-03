@@ -5,6 +5,13 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('agta-image-fixture-'+[guid]::NewGui
 [void][IO.Directory]::CreateDirectory($root);$script:checks=0
 function Check($value,$message) {if (-not $value) {throw $message};$script:checks++}
 function Reject([scriptblock]$body,$message) {$caught=$false;try {& $body | Out-Null} catch {$caught=$true};Check $caught $message}
+function Write-ExifFixture([byte[]]$Jpeg,[int]$Orientation,[string]$Path,[bool]$BigEndian=$false) {
+    # Real JPEG APP1/TIFF bytes, not mocked decoder properties.
+    $tiff=if ($BigEndian) {[byte[]](0x4d,0x4d,0,42,0,0,0,8,0,1,1,0x12,0,3,0,0,0,1,0,$Orientation,0,0,0,0,0,0)}
+        else {[byte[]](0x49,0x49,42,0,8,0,0,0,1,0,0x12,1,3,0,1,0,0,0,$Orientation,0,0,0,0,0,0,0)}
+    $app1=[byte[]](0xff,0xe1,0,34,69,120,105,102,0,0)+$tiff
+    [IO.File]::WriteAllBytes($Path,[byte[]]($Jpeg[0..1]+$app1+$Jpeg[2..($Jpeg.Length-1)]))
+}
 try {
     Add-Type -AssemblyName System.Drawing
     $path=Join-Path $root 'fixture.png'
@@ -62,6 +69,38 @@ try {
     Reject {Assert-ImageRegionMatches $rotated -ReferencePath $reference -ReferenceRotation 90 -MaxBytes 8} 'Image comparison ignored its byte bound.'
     $help=Get-AGTARuntimeHelp Assert-ImageRegionMatches
     Check ($help.available -and $help.note -match 'approximate content comparison') 'Comparison limits were absent from targeted help.'
+    $stored=Join-Path $root 'stored.jpg'
+    $image=[Drawing.Bitmap]::new($reference)
+    try {$image.Save($stored,[Drawing.Imaging.ImageFormat]::Jpeg)} finally {$image.Dispose()}
+    $jpeg=[IO.File]::ReadAllBytes($stored)
+    foreach ($orientation in 1..8) {
+        $tagged=Join-Path $root ('exif-'+$orientation+'.jpg')
+        Write-ExifFixture $jpeg $orientation $tagged ($orientation % 2 -eq 0)
+        $tagHash=(Get-FileHash $tagged).Hash
+        $raw=[Drawing.Bitmap]::new($stored)
+        $swap=$orientation -ge 5
+        $expected=[Drawing.Bitmap]::new($(if ($swap) {$raw.Height} else {$raw.Width}),$(if ($swap) {$raw.Width} else {$raw.Height}))
+        try {
+            # Independent EXIF coordinate definitions verify mirrors/transposes.
+            for ($y=0;$y -lt $raw.Height;$y++) {for ($x=0;$x -lt $raw.Width;$x++) {
+                $w=$raw.Width;$h=$raw.Height
+                $xy=switch ($orientation) {
+                    1 {@($x,$y)};2 {@(($w-1-$x),$y)};3 {@(($w-1-$x),($h-1-$y))};4 {@($x,($h-1-$y))}
+                    5 {@($y,$x)};6 {@(($h-1-$y),$x)};7 {@(($h-1-$y),($w-1-$x))};8 {@($y,($w-1-$x))}
+                }
+                $expected.SetPixel($xy[0],$xy[1],$raw.GetPixel($x,$y))
+            }}
+            $expectedPath=Join-Path $root ('display-'+$orientation+'.png')
+            $expected.Save($expectedPath,[Drawing.Imaging.ImageFormat]::Png)
+            $info=Assert-ImageRegionMatches $tagged -ReferencePath $expectedPath -MaxMeanError 0 -MaxTileError 0 -PassThru
+            Check ($info.actualExifOrientation -eq $orientation -and $info.actualDisplayWidth -eq $expected.Width -and $info.actualDisplayHeight -eq $expected.Height) 'EXIF display orientation/dimensions were ignored.'
+            $info=Assert-ImageRegionMatches $expectedPath -ReferencePath $tagged -MaxMeanError 0 -MaxTileError 0 -PassThru
+            Check ($info.referenceExifOrientation -eq $orientation -and (Get-FileHash $tagged).Hash -eq $tagHash) 'Reference orientation was ignored or the source file was changed.'
+        } finally {$raw.Dispose();$expected.Dispose()}
+        if ($orientation -ne 1) {Reject {Assert-ImageRegionMatches $tagged -ReferencePath $stored} 'Wrong displayed orientation passed against the raw stored image.'}
+    }
+    $info=Assert-ImageRegionMatches (Join-Path $root 'display-6.png') -ReferencePath (Join-Path $root 'exif-8.jpg') -ReferenceRotation 180 -MaxMeanError 0 -MaxTileError 0 -PassThru
+    Check ($info.referenceExifOrientation -eq 8 -and $info.referenceRotation -eq 180) 'Explicit rotation was applied before EXIF normalization.'
     "Image assertion checks: $script:checks passed"
 } finally {
     $resolved=[IO.Path]::GetFullPath($root);$parent=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'

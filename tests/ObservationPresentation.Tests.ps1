@@ -28,4 +28,7 @@ Check ($single.elementRows.Count -eq 1 -and $single.elementRows[0].Count -eq 10 
 $full=[pscustomobject]@{elements=@(@{element=@{name='Full tree'}})}
 Check ([object]::ReferenceEquals((ConvertTo-AGTAObservationRows $full),$full)) 'Explicit full CLI tree was reformatted.'
 Check ((Test-AGTAReadOnlyCommand help) -and -not (Test-AGTAReadOnlyCommand type)) 'Shared help/input classification is wrong.'
+$withoutErrors=$elements[0] | Select-Object * -ExcludeProperty propertyErrors
+$missing=ConvertTo-AGTAObservationRows @{elements=@($withoutErrors)}
+Check ($missing.elementRows[0][9].Count -eq 0) 'Absent property errors were padded with a null value.'
 "Observation presentation: $checks checks passed; object $($old.Length), row $($encoded.Length) characters."
