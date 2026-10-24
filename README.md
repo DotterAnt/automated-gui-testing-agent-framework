@@ -10,7 +10,7 @@ PowerShell-only framework for turning CSV testcase descriptions into repeatable 
 
 The final Auto response reports client/worker request timing, and `logs/exploration-transport.jsonl` records connection/startup/PID details. Run `tests/Measure-ExplorationLatency.ps1` for a read-only comparison of direct invocation and a native-pipe client. Outer shell-tool startup/transport is outside these measurements.
 
-[Watch the PoTATo demo recording](https://github.com/DottedAnt-Dooz/automated-gui-testing-agent-framework/releases/download/demo-v1/demo.mkv)
+[Watch the PoTATo demo recording](https://github.com/DotterAnt/automated-gui-testing-agent-framework/releases/download/demo-v1/demo.mkv)
 
 ## Workflows
 
@@ -31,7 +31,7 @@ Use this when a model is called through an API and the framework owns tool execu
 Graphical launcher:
 
 ```powershell
-cd C:\diplomamunka\automated-gui-testing-agent-framework
+cd .\automated-gui-testing-agent-framework
 .\Invoke-AgentAuthoringGui.ps1
 ```
 
@@ -40,7 +40,7 @@ The GUI lets a user load a CSV, preview and edit testcase rows, edit the system 
 Command-line launcher:
 
 ```powershell
-cd C:\diplomamunka\automated-gui-testing-agent-framework
+cd .\automated-gui-testing-agent-framework
 .\Invoke-AgentAuthoring.ps1 -TestCaseCsv ".\Microsoft Paint.csv" -Provider OpenAI -Model "gpt-5.5" -Execute
 ```
 
