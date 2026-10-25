@@ -134,6 +134,5 @@ Start with `docs/AUTHORING.md`. Complete the full GUI walkthrough and its explor
 
 The author-developed AGATA authoring workflow and shared PowerShell test runtime, built on potato-cli.
 
-The `tdk-2026-10-24` tag preserves the first submission snapshot;
-`tdk-2026-10-25-final` records the supplemented documentation and MIT licensing.
-See [LICENSE](LICENSE). The original experiment-time code state cannot always be reconstructed from these later snapshots.
+The `tdk-2026-10-25` tag identifies the published thesis source and documentation snapshot with MIT licensing.
+See [LICENSE](LICENSE). The original experiment-time code state cannot always be reconstructed from this snapshot.
