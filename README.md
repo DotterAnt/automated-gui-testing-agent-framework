@@ -129,3 +129,11 @@ v1 assumes the VM is already logged into an interactive desktop. It does not res
 ## Policy and execution changes
 
 Start with `docs/AUTHORING.md`. Complete the full GUI walkthrough and its exploration manifest, then generate from the shared template. InProcess execution reuses the CLI module while Process remains available for controlled comparisons. Generated scripts emit JSON and exit with `Get-AGTATestExitCode`. Runtime start registers the new process or individual new shared-host window for cleanup. Static checks reject observed COM/native-input/data-fabrication bypasses, but are not a sandbox. Mock reports incomplete exploration and cannot generate, execute, or claim GUI coverage.
+
+## AGATA thesis materials
+
+The author-developed AGATA authoring workflow and shared PowerShell test runtime, built on potato-cli.
+
+The `tdk-2026-10-24` tag preserves the first submission snapshot;
+`tdk-2026-10-25` records the supplemented documentation and MIT licensing.
+See [LICENSE](LICENSE). The original experiment-time code state cannot always be reconstructed from these later snapshots.
